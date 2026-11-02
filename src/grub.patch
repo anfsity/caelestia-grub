@@ -585,7 +585,7 @@
  	  /* Try to initialize adapter, if it fails, skip to next adapter.  */
 --- /dev/null
 +++ b/grub-core/gfxmenu/carousel.inc
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,162 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later
 + * Included by gui_list.c. Software-rendered carousel, bounded bitmap cache.
 + * No floating point, filesystem writes, menu model changes or boot commands.
@@ -643,6 +643,28 @@
 +  return self->carousel_cache[slot].sizes[level];
 +}
 +
++/* Titles are presentation copies: editing and booting still use entry->title.
++   GRUB's printf supports numeric precision but not the C printf "*" syntax. */
++static char *
++carousel_get_title (grub_font_t font, const char *source, int width)
++{
++  grub_size_t end = grub_strlen (source);
++  char *title = grub_malloc (end + sizeof ("..."));
++  int dots = grub_font_get_string_width (font, "...");
++  if (!title)
++    return 0;
++  grub_strcpy (title, source);
++  if (grub_font_get_string_width (font, title) <= width)
++    return title;
++  while (end && grub_font_get_string_width (font, title) > width - dots)
++    {
++      do { end--; } while (end && (title[end] & 0xc0) == 0x80);
++      title[end] = 0;
++    }
++  grub_strcpy (title + end, "...");
++  return title;
++}
++
 +static void
 +carousel_paint (list_impl_t self)
 +{
@@ -697,27 +719,10 @@
 +        grub_video_rect_t clip, title_saved;
 +        if (left < 0 || left + width > w || top < 0 || top + height > h)
 +          continue;
-+        title = grub_strdup (entry->title);
++        title = carousel_get_title (f, entry->title, width);
 +        if (!title)
 +          { grub_errno = GRUB_ERR_NONE; continue; }
 +        tw = grub_font_get_string_width (f, title);
-+        if (tw > width)
-+          {
-+            /* Truncate at UTF-8 boundaries, leaving room for an ellipsis.
-+               The actual menu title and boot commands remain untouched. */
-+            grub_size_t end = grub_strlen (title);
-+            int dots = grub_font_get_string_width (f, "...");
-+            while (end && grub_font_get_string_width (f, title) > width - dots)
-+              {
-+                do { end--; } while (end && (title[end] & 0xc0) == 0x80);
-+                title[end] = 0;
-+              }
-+            grub_free (title);
-+            title = grub_xasprintf ("%.*s...", (int) end, entry->title);
-+            if (!title)
-+              { grub_errno = GRUB_ERR_NONE; continue; }
-+            tw = grub_font_get_string_width (f, title);
-+          }
 +        clip.x = left; clip.y = top; clip.width = width; clip.height = height;
 +        grub_gui_set_viewport (&clip, &title_saved);
 +        grub_font_draw_string (title, f,
