@@ -72,7 +72,14 @@ class QMP:
 def fixture(args):
     """Exercise the actual installer payload with disposable GRUB menu entries."""
     out = ROOT / "build/vm"
-    command = ["bash", str(ROOT / "install.sh"), "--stage", str(out)]
+    command = [
+        "bash",
+        str(ROOT / "install.sh"),
+        "--stage",
+        str(out),
+        "--theme",
+        args.theme,
+    ]
     luks_uuid = (
         str(uuid.uuid4()) if args.encrypted_boot or args.encrypted_root else None
     )
@@ -669,6 +676,13 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Real GRUB integration-test harness")
     subs = p.add_subparsers(dest="command", required=True)
     f = subs.add_parser("fixture")
+    f.add_argument(
+        "--theme",
+        choices=sorted(
+            path.parent.name for path in (ROOT / "theme").glob("*/carousel.txt")
+        ),
+        default="starlight",
+    )
     f.add_argument("--resolution", default="1920x1080")
     f.add_argument("--native-resolution", default="1920x1080")
     f.add_argument("--timeout", type=int, default=-1)

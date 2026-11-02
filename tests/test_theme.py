@@ -26,9 +26,7 @@ class ThemeTest(unittest.TestCase):
                     break
                 pos += size
         self.assertTrue(available)
-        for theme in THEME.glob("*.txt"):
-            if theme.name == "FONT-LICENSE.txt":
-                continue
+        for theme in THEME.glob("*/carousel.txt"):
             for name in re.findall(
                 r'(?:font|item_font)\s*[:=]\s*"([^"]+)"', theme.read_text()
             ):
@@ -43,13 +41,14 @@ class ThemeTest(unittest.TestCase):
                 self.assertFalse(im.info.get("interlace"), str(p))
                 self.assertGreater(im.width, 0)
                 self.assertGreater(im.height, 0)
-        with Image.open(THEME / "background.png") as im:
-            self.assertGreaterEqual(im.width, 1920)
-            self.assertGreaterEqual(im.height, 1080)
+        for background in THEME.glob("*/background.png"):
+            with self.subTest(background=background), Image.open(background) as im:
+                self.assertGreaterEqual(im.width, 1920)
+                self.assertGreaterEqual(im.height, 1080)
 
     def test_referenced_images_and_nine_slices_exist(self):
-        for name in ("carousel.txt",):
-            source = (THEME / name).read_text()
+        for theme in THEME.glob("*/carousel.txt"):
+            source = theme.read_text()
             refs = re.findall(
                 r'(?:file|desktop-image|terminal-box|\w*pixmap_style|bar_style|highlight_style|scrollbar_frame|scrollbar_thumb)\s*[:=]\s*"([^"]+)"',
                 source,
@@ -58,10 +57,32 @@ class ThemeTest(unittest.TestCase):
                 if "*" in ref:
                     for piece in ("nw", "n", "ne", "w", "c", "e", "sw", "s", "se"):
                         self.assertTrue(
-                            (THEME / ref.replace("*", piece)).is_file(), ref
+                            (theme.parent / ref.replace("*", piece)).is_file(), ref
                         )
                 else:
-                    self.assertTrue((THEME / ref).is_file(), ref)
+                    self.assertTrue((theme.parent / ref).is_file(), ref)
+
+
+class ThemeCatalogTest(unittest.TestCase):
+    def test_both_themes_ship_with_layout_background_and_shared_assets(self):
+        themes = {path.parent.name for path in THEME.glob("*/carousel.txt")}
+        self.assertEqual(themes, {"starlight", "frieren"})
+        for name in themes:
+            with self.subTest(theme=name):
+                self.assertTrue((THEME / name / "background.png").is_file())
+                source = (THEME / name / "carousel.txt").read_text()
+                self.assertIn("caelestia-theme-switch", source)
+                self.assertIn("T   Theme:", source)
+        self.assertTrue((THEME / "themes.cfg").is_file())
+        self.assertTrue((THEME / "icons/windows.png").is_file())
+
+    def test_wallpapers_have_separate_source_provenance(self):
+        root = THEME.parent
+        self.assertTrue((root / "assets/wallpapers/starlight.jpg").is_file())
+        self.assertTrue((root / "assets/wallpapers/frieren.png").is_file())
+        self.assertEqual(
+            (root / "NOTICE.md").read_text(), (THEME / "ATTRIBUTION.md").read_text()
+        )
 
 
 if __name__ == "__main__":

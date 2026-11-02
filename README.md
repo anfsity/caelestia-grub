@@ -1,8 +1,43 @@
 # Caelestia GRUB
 
-A GRUB carousel inspired by [Caelestia](https://github.com/caelestia-dots/shell). Use the arrow keys to choose an OS and Enter to boot.
+A themeable GRUB boot menu inspired by [Caelestia](https://github.com/caelestia-dots/shell). Use the arrow keys to choose an OS and Enter to boot.
 
-![Caelestia GRUB](assets/screenshot.png)
+| Starlight — centred carousel | Frieren — system cards |
+| --- | --- |
+| ![Starlight](assets/screenshot.png) | ![Frieren](assets/frieren-preview.png) |
+
+## Themes and preview
+
+Both themes are installed together. Press **T** in the boot menu to switch between them without changing the selected operating system. The choice also follows you into and out of submenus. A theme switch cancels the boot countdown, like other navigation keys.
+
+- **Starlight**: a blue-violet starfield with a centred carousel.
+- **Frieren**: snowy artwork on the left and system cards on the right. Portrait displays move the cards below the character.
+
+To try the actual GRUB interface without installing it, install QEMU, OVMF and a VNC viewer, then run from this directory:
+
+```sh
+make run THEME=starlight
+# Or start directly in the other theme:
+# make run THEME=frieren
+```
+
+In another terminal, open the preview:
+
+```sh
+gvncviewer 127.0.0.1:1
+```
+
+Use the arrow keys to navigate and **T** to compare themes. The preview uses disposable demo boot entries. Stop QEMU with Ctrl+C in its terminal when finished.
+
+To choose the persistent default for your installed bootloader:
+
+```sh
+./install.sh install --theme starlight
+# For an existing installation:
+./install.sh update --theme frieren
+```
+
+The default is saved for future updates. Pressing **T** changes the theme for the current boot session without writing to the boot filesystem.
 
 ## Install
 
@@ -81,7 +116,7 @@ git pull --ff-only
 
 For an archive download, extract the new version and run `./install.sh update` in its directory.
 
-The installer saves your `grub.cfg` path, resolution, NVRAM preference and explicit `--unlock` volumes in `EFI/caelestia/install.conf` on the EFI partition. Updates reuse those settings; command-line options override them. If your EFI partition uses a custom mount point, pass it again with `--esp /your/mount/point`.
+The installer saves your `grub.cfg` path, default theme, resolution, NVRAM preference and explicit `--unlock` volumes in `EFI/caelestia/install.conf` on the EFI partition. Updates reuse those settings; command-line options override them. If your EFI partition uses a custom mount point, pass it again with `--esp /your/mount/point`.
 
 Older installations have no saved settings. The first update detects the paths as before; repeat any custom `--config`, `--resolution`, `--no-nvram` or `--unlock` options once to save them. Use `--nvram` to override a previously saved `--no-nvram`.
 
@@ -89,6 +124,6 @@ Updates build incrementally, keep matching backups of the previous modules, them
 
 To revert to your distro bootloader, select its original entry in the firmware boot menu.
 
-Press **E** to edit, **C** for the console and **Esc** to return.
+Press **T** to switch themes, **E** to edit, **C** for the console and **Esc** to return.
 
 [Credits](NOTICE.md) · [GPL-3.0-or-later](LICENSE)

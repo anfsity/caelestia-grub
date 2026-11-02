@@ -74,7 +74,10 @@ class GrubVMTest(unittest.TestCase):
                 self.fail("VM exited before theme loaded")
             im = self.capture()
             counts = im.resize((320, 180)).getcolors(320 * 180) or []
-            if sum(n for n, c in counts if c[:3] == (208, 188, 255)) > 80:
+            if (
+                sum(n for n, c in counts if c[:3] in ((208, 188, 255), (215, 231, 242)))
+                > 80
+            ):
                 time.sleep(0.4)
                 return
             time.sleep(0.5)
@@ -193,6 +196,117 @@ class GrubVMTest(unittest.TestCase):
         self.key("ret")
         self.key("down")
         self.boot_marker("diagnostic")
+
+    def assert_cards(self):
+        im = self.capture()
+        w, h = im.size
+        if w < h:
+            box = (int(w * 0.07), int(h * 0.41), int(w * 0.45), int(h * 0.84))
+        else:
+            box = (int(w * 0.55), int(h * 0.16), int(w * 0.95), int(h * 0.84))
+        counts = im.crop(box).getcolors(w * h) or []
+        self.assertGreater(sum(n for n, c in counts if c[:3] == (215, 231, 242)), 1000)
+
+    def switch_theme(self, name, key="t"):
+        self.q.key(key)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            im = self.capture().resize((320, 180))
+            counts = im.getcolors(320 * 180) or []
+            cards = sum(n for n, c in counts if c[:3] == (215, 231, 242))
+            carousel = sum(
+                n for n, c in counts if c[:3] in ((208, 188, 255), (255, 207, 181))
+            )
+            # The background can reach the framebuffer before its menu.
+            if (name == "frieren" and cards > 100) or (
+                name == "starlight" and cards == 0 and carousel > 80
+            ):
+                return
+            time.sleep(0.1)
+        self.fail(f"Theme did not switch to {name}")
+
+    def test_theme_switch_preserves_selection_and_switches_back(self):
+        self.start("--many", "--reduced-motion")
+        self.key("right")
+        self.assert_center((255, 207, 181))
+        self.capture().save(ROOT / "build/captures/starlight.png")
+        self.switch_theme("frieren")
+        self.assert_cards()
+        self.capture().save(ROOT / "build/captures/frieren.png")
+        self.assertNotIn("CAELESTIA_BOOT:", self.serial())
+        self.key("c")
+        self.q.type("echo THEME_CONSOLE_WORKS\n")
+        self.key("esc")
+        self.assert_cards()
+        self.switch_theme("starlight", "shift-t")
+        self.assert_center((255, 207, 181))
+        self.switch_theme("frieren")
+        self.boot_marker("ubuntu")
+
+    def test_theme_switch_cancels_autoboot(self):
+        self.start("--timeout", "3", "--reduced-motion")
+        self.switch_theme("frieren")
+        self.assert_cards()
+        time.sleep(3.5)
+        self.assertNotIn("CAELESTIA_BOOT:", self.serial())
+        self.boot_marker("arch")
+
+    def test_frieren_submenu_switch_and_boot(self):
+        self.start("--theme", "frieren", "--many", "--reduced-motion")
+        self.assert_cards()
+        self.key("end")
+        self.key("left")
+        self.key("ret")
+        self.assert_cards()
+        self.switch_theme("starlight")
+        self.assert_center((208, 188, 255))
+        self.key("esc")
+        self.assert_center((208, 188, 255))
+        self.key("end")
+        self.key("left")
+        self.key("ret")
+        self.key("down")
+        self.switch_theme("frieren")
+        self.assert_cards()
+        self.key("esc")
+        self.assert_cards()
+        self.key("end")
+        self.key("left")
+        self.key("ret")
+        self.key("down")
+        self.boot_marker("diagnostic")
+
+    def test_frieren_resolutions_and_console(self):
+        for resolution in ("640x480", "1920x1080", "768x1024"):
+            with self.subTest(resolution=resolution):
+                try:
+                    self.start(
+                        "--theme",
+                        "frieren",
+                        "--resolution",
+                        resolution,
+                        "--native-resolution",
+                        resolution,
+                        "--many",
+                        "--reduced-motion",
+                    )
+                    self.assertEqual(
+                        self.capture().size, tuple(map(int, resolution.split("x")))
+                    )
+                    self.assert_cards()
+                    self.capture().save(
+                        ROOT / f"build/captures/frieren-{resolution}.png"
+                    )
+                    self.key("e")
+                    self.key("esc")
+                    self.key("c")
+                    self.q.type("echo FRIEREN_CONSOLE_WORKS\n")
+                    self.key("esc")
+                    self.assert_cards()
+                    self.key("home")
+                    self.boot_marker("windows")
+                finally:
+                    self.stop()
 
     def test_right_then_enter_executes_selected_os(self):
         self.start("--reduced-motion")

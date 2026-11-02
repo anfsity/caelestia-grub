@@ -1,5 +1,6 @@
 .PHONY: build install update assets test run
-PYTHON ?= .venv/bin/python
+PYTHON ?= python3
+THEME ?= starlight
 
 build:
 	./install.sh --build
@@ -12,5 +13,5 @@ assets:
 test:
 	$(PYTHON) -m unittest discover -s tests -v
 run:
-	$(PYTHON) tests/vm.py fixture
+	$(PYTHON) tests/vm.py fixture --theme "$(THEME)"
 	$(PYTHON) tests/vm.py run

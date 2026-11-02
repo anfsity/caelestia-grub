@@ -67,7 +67,7 @@
  
  static void
  make_selected_item_visible (list_impl_t self)
-@@ -462,6 +472,11 @@
+@@ -462,6 +472,16 @@
    if (!grub_video_have_common_points (region, &self->bounds))
      return;
  
@@ -76,10 +76,15 @@
 +      carousel_paint (self);
 +      return;
 +    }
++  if (self->id && grub_strcmp (self->id, "caelestia-cards") == 0)
++    {
++      cards_paint (self);
++      return;
++    }
    check_boxes (self);
  
    if (! self->menu_box || ! self->selected_item_box || ! self->item_box)
-@@ -858,6 +873,7 @@
+@@ -858,6 +878,7 @@
                     grub_gfxmenu_view_t view)
  {
    list_impl_t self = vself;
@@ -87,6 +92,23 @@
    if (view->nested)
      self->first_shown_index = 0;
  }
+--- a/grub-core/gfxmenu/gui_image.c
++++ b/grub-core/gfxmenu/gui_image.c
+@@ -175,6 +175,14 @@
+ {
+   grub_gui_image_t self = vself;
+ 
++  /* The key strip follows responsive bounds; its source bitmap does not
++     impose a minimum size on the canvas layout. */
++  if (self->id && grub_strcmp (self->id, "caelestia-controls") == 0)
++    {
++      *width = *height = 0;
++      return;
++    }
++
+   if (self->raw_bitmap)
+     {
+       *width = grub_video_bitmap_get_width (self->raw_bitmap);
 --- a/grub-core/gfxmenu/view.c
 +++ b/grub-core/gfxmenu/view.c
 @@ -18,6 +18,7 @@
@@ -106,7 +128,21 @@
    view->need_to_check_sanity = 1;
    view->terminal_border = 3;
    view->terminal_rect.width = view->screen.width * 7 / 10;
-@@ -339,9 +342,65 @@
+@@ -127,6 +130,13 @@
+ {
+   if (!view)
+     return;
++  /* gfxterm can repaint while the next theme loads. Its decorator must stop
++     referring to this view before any of the owned graphics are freed. */
++  if (term_view == view)
++    {
++      grub_gfxterm_decorator_hook = 0;
++      term_view = 0;
++    }
+   while (grub_gfxmenu_timeout_notifications)
+     {
+       struct grub_gfxmenu_timeout_notify *p;
+@@ -339,9 +349,94 @@
      grub_video_set_area_status (GRUB_VIDEO_AREA_ENABLED);
  }
  
@@ -123,6 +159,19 @@
 +  return result;
 +}
 +
++/* Canvas recomputes child bounds on every paint. Update its layout inputs,
++   rather than temporary widget bounds that canvas would immediately replace. */
++static void
++caelestia_update_bounds (grub_gui_component_t component,
++                         const grub_video_rect_t *bounds)
++{
++  component->x = bounds->x;
++  component->y = bounds->y;
++  component->w = bounds->width;
++  component->h = bounds->height;
++  component->xfrac = component->yfrac = component->wfrac = component->hfrac = 0;
++}
++
 +static void
 +caelestia_layout (grub_gui_component_t component, void *data)
 +{
@@ -131,6 +180,12 @@
 +  char font[48];
 +  if (!id) return;
 +  if (!grub_strcmp (id, "caelestia-brand"))
++    {
++      grub_snprintf (font, sizeof (font), "Caelestia Regular %d",
++                     grub_gfxmenu_font_size (view, 14));
++      component->ops->set_property (component, "font", font);
++    }
++  else if (!grub_strcmp (id, "caelestia-theme-switch"))
 +    {
 +      grub_snprintf (font, sizeof (font), "Caelestia Regular %d",
 +                     grub_gfxmenu_font_size (view, 14));
@@ -148,16 +203,26 @@
 +                     grub_gfxmenu_font_size (view, 16));
 +      component->ops->set_property (component, "font", font);
 +    }
++  else if (!grub_strcmp (id, "caelestia-cards"))
++    {
++      grub_video_rect_t bounds;
++      int portrait = view->screen.width < view->screen.height;
++      bounds.x = view->screen.width * (portrait ? 7 : 55) / 100;
++      bounds.y = view->screen.height * (portrait ? 41 : 16) / 100;
++      bounds.width = view->screen.width * (portrait ? 86 : 40) / 100;
++      bounds.height = view->screen.height * (portrait ? 43 : 68) / 100;
++      caelestia_update_bounds (component, &bounds);
++    }
 +  else if (!grub_strcmp (id, "caelestia-controls"))
 +    {
 +      grub_video_rect_t bounds;
 +      int width = grub_min (view->screen.width * 90 / 100,
 +                            640 * grub_max (810, view->screen.height) / 1080);
-+      component->ops->get_bounds (component, &bounds);
++      bounds.y = component->y + grub_fixed_sfs_multiply (view->screen.height, component->yfrac);
 +      bounds.width = grub_max (160, width);
 +      bounds.height = bounds.width / 16;
 +      bounds.x = (view->screen.width - bounds.width) / 2;
-+      component->ops->set_bounds (component, &bounds);
++      caelestia_update_bounds (component, &bounds);
 +    }
 +}
 +
@@ -172,16 +237,18 @@
    init_terminal (view);
  
    init_background (view);
-@@ -406,7 +465,33 @@
+@@ -406,7 +501,35 @@
  {
    grub_gfxmenu_view_t view = data;
  
 +  const char *enabled = grub_env_get ("caelestia_carousel");
 +  const char *motion = grub_env_get ("caelestia_motion");
++  const char *layout = grub_env_get ("caelestia_layout");
 +  int previous = view->selected;
    view->selected = entry;
 +  if (enabled && grub_strcmp (enabled, "1") == 0
 +      && (!motion || grub_strcmp (motion, "0") != 0)
++      && (!layout || grub_strcmp (layout, "carousel") == 0)
 +      && grub_abs (entry - previous) == 1)
 +    {
 +      grub_uint64_t start = grub_get_time_ms ();
@@ -206,7 +273,7 @@
    grub_gfxmenu_redraw_menu (view);
  }
  
-@@ -420,6 +505,43 @@
+@@ -420,6 +543,43 @@
      return;
  
    grub_video_set_area_status (GRUB_VIDEO_AREA_DISABLED);
@@ -250,7 +317,7 @@
  
    term_box->set_content_size (term_box, term_view->terminal_rect.width,
  			      term_view->terminal_rect.height);
-@@ -437,9 +559,11 @@
+@@ -437,9 +597,11 @@
  {
    struct grub_font_glyph *glyph;
    glyph = grub_font_get_glyph (terminal_font, 'M');
@@ -264,7 +331,7 @@
                           + 2 * border_width;
  }
  
-@@ -524,6 +648,14 @@
+@@ -524,6 +686,14 @@
  {
    grub_font_t terminal_font;
  
@@ -279,7 +346,7 @@
    terminal_font = grub_font_get (view->terminal_font_name);
    if (!terminal_font)
      {
-@@ -531,10 +663,17 @@
+@@ -531,10 +701,17 @@
        return;
      }
  
@@ -298,7 +365,7 @@
  
    /* Note: currently there is no API for changing the gfxterm font
       on the fly, so whatever font the initially loaded theme specifies
-@@ -587,69 +726,15 @@
+@@ -587,69 +764,15 @@
  
  }
  
@@ -421,19 +488,55 @@
  }
 --- a/grub-core/normal/menu.c
 +++ b/grub-core/normal/menu.c
-@@ -37,6 +37,8 @@
- /* Time to delay after displaying an error message about a default/fallback
+@@ -38,6 +38,8 @@
     entry failing to boot.  */
  #define DEFAULT_ENTRY_ERROR_DELAY_MS  2500
-+
-+int (*grub_gfxmenu_boot_hook) (grub_menu_entry_t entry) = NULL;
  
++int (*grub_gfxmenu_boot_hook) (grub_menu_entry_t entry) = NULL;
++
  grub_err_t (*grub_gfxmenu_try_hook) (int entry, grub_menu_t menu,
  				     int nested) = NULL;
-@@ -701,6 +703,22 @@
+ 
+@@ -311,12 +313,25 @@
+ 
+   if (entry->submenu)
+     {
++      char *selected_theme = NULL;
+       if (menu && menu->size)
+ 	{
++          const char *name;
+ 	  grub_show_menu (menu, 1, auto_boot);
++          name = grub_env_get ("caelestia_theme");
++          if (name)
++            selected_theme = grub_strdup (name);
+ 	  grub_normal_free_menu (menu);
+ 	}
+       grub_env_context_close ();
++      /* Submenus copy their environment. Carry the chosen theme back into the
++         parent, then recompute the layout and path derived from that choice. */
++      if (selected_theme)
++        {
++          grub_env_set ("caelestia_theme", selected_theme);
++          grub_free (selected_theme);
++          grub_script_execute_sourcecode ("caelestia_apply_theme");
++        }
+     }
+   if (oldchosen)
+     grub_env_set ("chosen", oldchosen);
+@@ -678,7 +693,7 @@
+ 
+   while (1)
+     {
+-      int c;
++      int c, themed = 0;
+       timeout = grub_menu_get_timeout ();
+ 
+       if (grub_normal_exit_level)
+@@ -700,6 +715,23 @@
+ 	}
  
        c = grub_getkey_noblock ();
- 
++
 +      {
 +        const char *carousel = grub_env_get ("caelestia_carousel");
 +        const char *active_theme = grub_env_get ("theme");
@@ -442,18 +545,34 @@
 +        FOR_ACTIVE_TERM_OUTPUTS (output)
 +          if (grub_strcmp (output->name, "gfxterm") == 0)
 +            graphical = 1;
-+        if (graphical && carousel && grub_strcmp (carousel, "1") == 0
-+            && active_theme && grub_strstr (active_theme, "/carousel.txt"))
++        themed = graphical && carousel && grub_strcmp (carousel, "1") == 0
++          && active_theme && grub_strstr (active_theme, "/carousel.txt");
++        if (themed)
 +          {
 +            if (c == GRUB_TERM_KEY_LEFT) c = GRUB_TERM_KEY_UP;
 +            else if (c == GRUB_TERM_KEY_RIGHT) c = GRUB_TERM_KEY_DOWN;
 +          }
 +      }
-+
+ 
        /* Negative values are returned on error. */
        if ((c != GRUB_TERM_NO_KEY) && (c > 0))
- 	{
-@@ -817,6 +835,9 @@
+@@ -710,6 +742,15 @@
+ 	      grub_env_unset ("fallback");
+ 	      clear_timeout ();
+ 	    }
++
++          if (themed && (c == 't' || c == 'T'))
++            {
++              /* Refresh the viewer without rebuilding the menu or changing its
++                 selected entry. The loader owns the available theme cycle. */
++              menu_fini ();
++              grub_script_execute_sourcecode ("caelestia_switch_theme");
++              goto refresh;
++            }
+ 
+ 	  switch (c)
+ 	    {
+@@ -817,6 +858,9 @@
  {
    int *notify_boot = userdata;
  
@@ -463,7 +582,7 @@
    if (*notify_boot)
      {
        grub_printf ("  ");
-@@ -885,7 +906,8 @@
+@@ -885,7 +929,8 @@
  					 &execution_callback, &notify_boot);
        else
  	{
@@ -591,7 +710,7 @@
  	  /* Try to initialize adapter, if it fails, skip to next adapter.  */
 --- /dev/null
 +++ b/grub-core/gfxmenu/carousel.inc
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,257 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later
 + * Included by gui_list.c. Software-rendered carousel, bounded bitmap cache.
 + * No floating point, filesystem writes, menu model changes or boot commands.
@@ -647,6 +766,15 @@
 +      grub_errno = GRUB_ERR_NONE;
 +    }
 +  return self->carousel_cache[slot].sizes[level];
++}
++
++static grub_font_t
++menu_get_font (grub_gfxmenu_view_t view, int base)
++{
++  char name[48];
++  grub_snprintf (name, sizeof (name), "Caelestia Regular %d",
++                 grub_gfxmenu_font_size (view, base));
++  return grub_font_get (name);
 +}
 +
 +/* Titles are presentation copies: editing and booting still use entry->title.
@@ -709,12 +837,7 @@
 +      entry = grub_menu_get_entry (view->menu, i);
 +      if (!entry)
 +        continue;
-+      {
-+        char name[48];
-+        grub_snprintf (name, sizeof (name), "Caelestia Regular %d",
-+                       grub_gfxmenu_font_size (view, i == view->selected ? 32 : 20));
-+        f = grub_font_get (name);
-+      }
++      f = menu_get_font (view, i == view->selected ? 32 : 20);
 +      /* Never pass signed coordinates to GRUB's unsigned viewport API.
 +         Only complete columns are painted; no offscreen text can leak. */
 +      {
@@ -754,6 +877,95 @@
 +                            w / 2 - count * step / 2 + i * step, h - unit * 2,
 +                            first + i == view->selected ? unit * 3 : unit, unit);
 +  }
++  grub_gui_restore_viewport (&saved);
++}
++
++static void
++cards_draw_text (grub_font_t font, const char *source, grub_video_color_t color,
++                 int x, int baseline, int width)
++{
++  char *text = carousel_get_title (font, source, width);
++  if (!text)
++    { grub_errno = GRUB_ERR_NONE; return; }
++  grub_font_draw_string (text, font, color, x, baseline);
++  grub_free (text);
++}
++
++/* Three visible cards keep the artwork clear while allowing arbitrarily long
++   menus. This renderer owns its panel, row layout and text clipping; it shares
++   the same menu model and bounded icon cache with the carousel. */
++static void
++cards_paint (list_impl_t self)
++{
++  grub_gfxmenu_view_t view = self->view;
++  int w = self->bounds.width, h = self->bounds.height;
++  int scale = grub_min (view->screen.height * 1024 / 1080,
++                        view->screen.width * 1024 / 1280);
++  int pad = grub_max (12, w * 6 / 100);
++  int row_height = h * 16 / 100;
++  int row_gap = grub_max (8, h * 2 / 100);
++  int icon_pad = grub_max (6, row_height * 15 / 100);
++  int icon_size = grub_min (grub_max (24, 64 * scale / 1024), row_height - icon_pad * 2);
++  int count = grub_min (3, view->menu->size);
++  int first = grub_max (0, grub_min (view->selected - 1, view->menu->size - count));
++  int row_width = w - pad * 2;
++  int i;
++  char counter[32];
++  grub_font_t small = menu_get_font (view, 14);
++  grub_font_t heading = menu_get_font (view, 32);
++  grub_font_t item_font = menu_get_font (view, 20);
++  grub_font_t selected_font = menu_get_font (view, 24);
++  int text_width = row_width - icon_pad * 3 - icon_size;
++  grub_video_color_t ink = grub_video_map_rgba_color (self->item_color);
++  grub_video_color_t selected_ink = grub_video_map_rgba_color (self->selected_item_color);
++  grub_video_rect_t saved;
++  grub_gfxmenu_box_t panel;
++
++  if (!check_boxes (self))
++    return;
++  panel = self->menu_box;
++  grub_gui_set_viewport (&self->bounds, &saved);
++  panel->set_content_size (panel, w - panel->get_left_pad (panel) - panel->get_right_pad (panel),
++                          h - panel->get_top_pad (panel) - panel->get_bottom_pad (panel));
++  panel->draw (panel, 0, 0);
++  cards_draw_text (small, "CAELESTIA / FRIEREN", ink, pad,
++                   h * 9 / 100 + grub_font_get_ascent (small), row_width);
++  cards_draw_text (heading, "Choose your system", ink, pad,
++                   h * 16 / 100 + grub_font_get_ascent (heading), row_width);
++
++  for (i = 0; i < count; i++)
++    {
++      int index = first + i;
++      int selected = index == view->selected;
++      int top = h * 29 / 100 + i * (row_height + row_gap);
++      int text_left = pad + icon_pad * 2 + icon_size;
++      grub_menu_entry_t entry = grub_menu_get_entry (view->menu, index);
++      grub_gfxmenu_box_t row = selected ? self->selected_item_box : self->item_box;
++      grub_font_t font = selected ? selected_font : item_font;
++      struct grub_video_bitmap *icon = carousel_icon (self, index, 16, icon_size);
++
++      row->set_content_size (row, row_width - row->get_left_pad (row) - row->get_right_pad (row),
++                             row_height - row->get_top_pad (row) - row->get_bottom_pad (row));
++      row->draw (row, pad, top);
++      if (icon)
++        grub_video_blit_bitmap (icon, GRUB_VIDEO_BLIT_BLEND,
++                                pad + icon_pad, top + (row_height - icon_size) / 2,
++                                0, 0, icon_size, icon_size);
++      cards_draw_text (font, entry->title, selected ? selected_ink : ink,
++                       text_left, top + (row_height + grub_font_get_ascent (font)
++                                          - grub_font_get_descent (font)) / 2,
++                       text_width);
++    }
++  {
++    const char *title = grub_menu_get_entry (view->menu, view->selected)->title;
++    /* A clipped card gets a smaller detail line; short names appear once. */
++    if (grub_font_get_string_width (selected_font, title) > text_width)
++      cards_draw_text (small, title, ink, pad,
++                       h * 86 / 100 + grub_font_get_ascent (small), row_width);
++  }
++  grub_snprintf (counter, sizeof (counter), "%d / %d", view->selected + 1, view->menu->size);
++  cards_draw_text (small, counter, ink, pad,
++                   h * 93 / 100 + grub_font_get_ascent (small), row_width);
 +  grub_gui_restore_viewport (&saved);
 +}
 --- a/grub-core/kern/efi/sb.c

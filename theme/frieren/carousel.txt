@@ -1,0 +1,72 @@
+# Requires the bundled Caelestia GRUB extension.
+title-text: ""
+desktop-image: "background.png"
+desktop-image-scale-method: "crop"
+desktop-image-h-align: "left"
+desktop-color: "#142236"
+terminal-font: "Caelestia Mono Regular 20"
+message-font: "Caelestia Regular 20"
+message-color: "#edf3fa"
+message-bg-color: "#171322"
+terminal-left: "8%"
+terminal-top: "20%"
+terminal-width: "84%"
+terminal-height: "66%"
+
++ boot_menu {
+  id = "caelestia-cards"
+  left = 55%
+  top = 16%
+  width = 40%
+  height = 68%
+  item_font = "Caelestia Regular 20"
+  selected_item_font = "Caelestia Regular 24"
+  item_color = "#edf3fa"
+  selected_item_color = "#142236"
+  icon_width = 96
+  icon_height = 96
+  menu_pixmap_style = "../panel_*.png"
+  item_pixmap_style = "../card_*.png"
+  selected_item_pixmap_style = "../card-selected_*.png"
+  scrollbar = false
+}
++ image {
+  id = "caelestia-controls"
+  left = 50%-320
+  top = 86%
+  width = 640
+  height = 40
+  file = "../controls-vertical.png"
+}
++ label {
+  id = "__timeout__"
+  left = 10%
+  top = 91%
+  width = 80%
+  height = 3%
+  align = "center"
+  text = "Starting in %d seconds"
+  font = "Caelestia Regular 16"
+  color = "#e3ecf5"
+}
++ progress_bar {
+  id = "__timeout__"
+  left = 42%
+  top = 94%
+  width = 16%
+  height = 6
+  show_text = false
+  bar_style = "../progress_*.png"
+  highlight_style = "../track_*.png"
+}
++ label {
+  id = "caelestia-theme-switch"
+  left = 7%
+  top = 96%
+  width = 86%
+  height = 3%
+  align = "center"
+  text = "T   Theme: Frieren"
+  font = "Caelestia Regular 14"
+  color = "#c3d1e2"
+}

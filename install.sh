@@ -21,6 +21,8 @@ sign_key=
 sign_cert=
 resolution=
 resolution_override=0
+theme=starlight
+theme_override=0
 unlock_uuids=()
 boot_fs=
 abstractions=
@@ -76,6 +78,10 @@ validate_resolution() {
   [[ -z $resolution || $resolution == auto || $resolution =~ ^[0-9]{3,5}x[0-9]{3,5}$ ]] || die 'Use --resolution WIDTHxHEIGHT or auto'
 }
 
+validate_theme() {
+  [[ $theme != */* && -f "$project/theme/$theme/carousel.txt" ]] || die 'Use --theme starlight or frieren'
+}
+
 load_installation_settings() {
   local settings key value format=
   settings=$(root cat -- "$1")
@@ -84,6 +90,7 @@ load_installation_settings() {
     case "$key" in
       format) format=$value ;;
       config) if [[ -z $config ]]; then config=$value; fi ;;
+      theme) if (( ! theme_override )); then theme=$value; fi ;;
       resolution) if (( ! resolution_override )); then resolution=$value; resolution_override=1; fi ;;
       nvram)
         [[ $value == 0 || $value == 1 ]] || die 'Invalid saved NVRAM preference'
@@ -177,6 +184,7 @@ update: rebuild an existing installation, reusing its paths and preferences.
   --esp DIR        EFI System Partition (otherwise detected)
   --config FILE    Existing grub.cfg (remembered after installation)
   --resolution WxH Preferred firmware resolution (auto allowed; remembered)
+  --theme NAME     Default theme: starlight or frieren (remembered; T switches live)
   --jobs COUNT     Parallel build jobs (default: JOBS or 8)
   --no-nvram       Install files without creating a firmware boot entry
   --nvram          Create a missing boot entry (override saved --no-nvram)
@@ -200,6 +208,7 @@ while (( $# )); do
     --esp) [[ $# -ge 2 ]] || die '--esp requires a directory'; esp=$2; shift 2 ;;
     --config) [[ $# -ge 2 ]] || die '--config requires a file'; config=$2; shift 2 ;;
     --resolution) [[ $# -ge 2 ]] || die '--resolution requires WIDTHxHEIGHT or auto'; resolution=$2; resolution_override=1; shift 2 ;;
+    --theme) [[ $# -ge 2 ]] || die '--theme requires starlight or frieren'; theme=$2; theme_override=1; shift 2 ;;
     --jobs) [[ $# -ge 2 ]] || die '--jobs requires a positive integer'; jobs=$2; shift 2 ;;
     --no-nvram) nvram=0; nvram_override=1; shift ;;
     --nvram) nvram=1; nvram_override=1; shift ;;
@@ -242,6 +251,7 @@ if [[ $mode == install || $mode == update ]]; then
   [[ -n $config && $config == /* ]] || die 'Use --config /absolute/path/to/grub.cfg'
   root test -f "$config" || die "Configuration does not exist: $config"
   validate_resolution
+  validate_theme
   if (( nvram )); then command -v efibootmgr >/dev/null || die 'Install efibootmgr or use --no-nvram'; fi
   for variable in /sys/firmware/efi/efivars/SecureBoot-*; do
     [[ -e $variable ]] || continue
@@ -298,6 +308,7 @@ if [[ $mode == install || $mode == update ]]; then
   fi
 else
   validate_resolution
+  validate_theme
   config_path=/boot/grub/grub.cfg
   prefix_path=/boot/grub/caelestia
 fi
@@ -358,6 +369,7 @@ make -C "$build_dir" -j"$jobs" > "$build_dir/build.log" 2>&1 || {
   tail -50 "$build_dir/build.log"; die 'GRUB build failed';
 }
 if [[ $mode == build ]]; then printf 'Built: %s\n' "$build_dir"; exit 0; fi
+"$build_dir/grub-script-check" "$project/theme/themes.cfg"
 
 mkdir -p "$project/build"
 work=$(mktemp -d "$project/build/install.XXXXXX")
@@ -429,8 +441,8 @@ set gfxterm_font="Caelestia Mono Regular 12"
 set color_normal=light-gray/black
 set color_highlight=black/light-magenta
 terminal_output gfxterm
-set theme=\$prefix/theme/carousel.txt
-export theme
+set caelestia_theme=$theme
+source \$prefix/theme/themes.cfg
 set caelestia_carousel=1
 export caelestia_carousel
 set timeout_style=menu
@@ -492,9 +504,9 @@ fi
 
 if root test -f "$target/grubenv"; then root cp -- "$target/grubenv" "$payload/grubenv"
 elif root test -f "$(dirname -- "$config")/grubenv"; then root cp -- "$(dirname -- "$config")/grubenv" "$payload/grubenv"; fi
-printf 'format=1\nconfig=%s\nresolution=%s\nnvram=%s\n' \
-  "$config" "${resolution:-auto}" "$nvram" > "$work/install.conf"
+printf 'format=1\nconfig=%s\nresolution=%s\nnvram=%s\ntheme=%s\n' \
+  "$config" "${resolution:-auto}" "$nvram" "$theme" > "$work/install.conf"
 for uuid in "${manual_uuids[@]}"; do printf 'unlock=%s\n' "$uuid" >> "$work/install.conf"; done
 deploy_installation "$payload" "$work/grubx64.efi" "$work/install.conf" "$target" "$esp/EFI/caelestia"
-printf 'Installed Caelestia carousel.\nMenu: %s\nLoader: %s/EFI/caelestia/grubx64.efi\n' "$config" "$esp"
+printf 'Installed Caelestia.\nTheme: %s\nMenu: %s\nLoader: %s/EFI/caelestia/grubx64.efi\n' "$theme" "$config" "$esp"
 printf 'Update from this source directory: ./install.sh update --esp %q\n' "$esp"

@@ -94,25 +94,38 @@ def slices(name, color, radius=24):
             )
 
 
-def background(width, height):
-    im = ImageOps.fit(
-        Image.open(ROOT / "assets/wallpaper.webp").convert("RGB"),
-        (width, height),
-        centering=(0.5, 0.44),
-    )
-    overlay = Image.new("RGBA", im.size, (17, 13, 27, 80))
-    im = Image.alpha_composite(im.convert("RGBA"), overlay)
-    # Soft vignette is baked once. No wallpaper animation in firmware.
-    shade = Image.new("RGBA", (1, height))
-    for y in range(height):
-        t = y / height
-        alpha = int(40 + 105 * max(0, (t - 0.48) / 0.52))
-        shade.putpixel((0, y), (15, 12, 24, alpha))
+def create_background(theme, width=2560, height=1440):
+    source = next((ROOT / "assets/wallpapers").glob(f"{theme}.*"))
+    with Image.open(source) as original:
+        im = ImageOps.fit(
+            original.convert("RGB"), (width, height), centering=(0.5, 0.44)
+        )
+    im = im.convert("RGBA")
+    # Bake contrast into static assets; firmware only scales and blits them.
+    if theme == "starlight":
+        im = Image.alpha_composite(im, Image.new("RGBA", im.size, (13, 11, 31, 58)))
+        shade = Image.new("RGBA", (1, height))
+        for y in range(height):
+            alpha = int(15 + 135 * max(0, (y / height - 0.45) / 0.55))
+            shade.putpixel((0, y), (12, 10, 27, alpha))
+    else:
+        im = Image.alpha_composite(im, Image.new("RGBA", im.size, (14, 25, 46, 20)))
+        side = Image.new("RGBA", (width, 1))
+        for x in range(width):
+            alpha = int(110 * max(0, (x / width - 0.42) / 0.58))
+            side.putpixel((x, 0), (12, 20, 38, alpha))
+        im = Image.alpha_composite(im, side.resize(im.size))
+        shade = Image.new("RGBA", (1, height))
+        for y in range(height):
+            alpha = int(125 * max(0, (y / height - 0.65) / 0.35))
+            shade.putpixel((0, y), (12, 20, 38, alpha))
     im = Image.alpha_composite(im, shade.resize(im.size))
-    im.convert("RGB").save(OUT / "background.png", optimize=True)
+    target = OUT / theme
+    target.mkdir(parents=True, exist_ok=True)
+    im.convert("RGB").save(target / "background.png", optimize=True)
 
 
-def control_hints():
+def control_hints(direction):
     """Antialiased, transparent keycap strip at its native GRUB display size."""
     scale = 3
     im = Image.new("RGBA", (640 * scale, 40 * scale))
@@ -120,12 +133,20 @@ def control_hints():
     label_font = ImageFont.truetype(str(FONT), 16 * scale)
     key_font = ImageFont.truetype(str(FONT), 14 * scale)
     groups = [
-        (["left", "right"], "Choose"),
+        (["up", "down"] if direction == "vertical" else ["left", "right"], "Choose"),
         (["Enter"], "Boot"),
         (["E"], "Edit"),
         (["C"], "Console"),
     ]
-    widths = {"left": 32, "right": 32, "Enter": 60, "E": 32, "C": 32}
+    widths = {
+        "left": 32,
+        "right": 32,
+        "up": 32,
+        "down": 32,
+        "Enter": 60,
+        "E": 32,
+        "C": 32,
+    }
     text_width = lambda value: draw.textlength(value, font=label_font) / scale
     group_widths = [
         sum(widths[k] for k in keys) + 6 * (len(keys) - 1) + 10 + text_width(label)
@@ -143,25 +164,20 @@ def control_hints():
                 width=scale,
             )
             cx = x + width / 2
-            if key in ("left", "right"):
-                direction = -1 if key == "left" else 1
-                points = [(cx - direction * 6, 20), (cx + direction * 6, 20)]
-                draw.line(
-                    [(round(px * scale), py * scale) for px, py in points],
-                    fill="#f2eafa",
-                    width=scale,
-                )
-                points = [
-                    (cx + direction * 2, 16),
-                    (cx + direction * 6, 20),
-                    (cx + direction * 2, 24),
-                ]
-                draw.line(
-                    [(round(px * scale), py * scale) for px, py in points],
-                    fill="#f2eafa",
-                    width=scale,
-                    joint="curve",
-                )
+            if key in ("left", "right", "up", "down"):
+                sign = -1 if key in ("left", "up") else 1
+                shaft = [(cx - sign * 6, 20), (cx + sign * 6, 20)]
+                head = [(cx + sign * 2, 16), (cx + sign * 6, 20), (cx + sign * 2, 24)]
+                if direction == "vertical":
+                    shaft = [(cx + y - 20, 20 + x - cx) for x, y in shaft]
+                    head = [(cx + y - 20, 20 + x - cx) for x, y in head]
+                for points in (shaft, head):
+                    draw.line(
+                        [(round(x * scale), round(y * scale)) for x, y in points],
+                        fill="#f2eafa",
+                        width=scale,
+                        joint="curve",
+                    )
             else:
                 draw.text(
                     (round(cx * scale), 20 * scale),
@@ -181,7 +197,8 @@ def control_hints():
         )
         x += text_width(label) + 28
     im.resize((640, 40), Image.Resampling.LANCZOS).save(
-        OUT / "controls.png", optimize=True
+        OUT / ("controls-vertical.png" if direction == "vertical" else "controls.png"),
+        optimize=True,
     )
 
 
@@ -189,12 +206,17 @@ def main():
     prepare_font()
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "icons").mkdir(exist_ok=True)
-    background(2560, 1440)
-    control_hints()
+    for theme in ("starlight", "frieren"):
+        create_background(theme)
+    for direction in ("horizontal", "vertical"):
+        control_hints(direction)
     for name in MANIFEST["icons"]:
         badge(name).save(OUT / "icons" / f"{name}.png", optimize=True)
     for alias, src in MANIFEST["aliases"].items():
         shutil.copyfile(OUT / "icons" / f"{src}.png", OUT / "icons" / f"{alias}.png")
+    slices("panel", "#121e32ed", 24)
+    slices("card", "#ffffff0c", 12)
+    slices("card-selected", "#d7e7f2", 12)
     slices("track", "#393143", 3)
     slices("progress", "#d0bcff", 3)
     for size in (12, 14, 16, 20, 24, 32, 40, 48, 64, 80, 96, 128):

@@ -54,7 +54,7 @@ terminal-height: "66%"
   top = 83%
   width = 640
   height = 40
-  file = "controls.png"
+  file = "../controls.png"
 }
 + label {
   id = "__timeout__"
@@ -74,6 +74,17 @@ terminal-height: "66%"
   width = 16%
   height = 6
   show_text = false
-  bar_style = "progress_*.png"
-  highlight_style = "track_*.png"
+  bar_style = "../progress_*.png"
+  highlight_style = "../track_*.png"
+}
++ label {
+  id = "caelestia-theme-switch"
+  left = 7%
+  top = 96%
+  width = 86%
+  height = 3%
+  align = "center"
+  text = "T   Theme: Starlight"
+  font = "Caelestia Regular 14"
+  color = "#b5abc9"
 }

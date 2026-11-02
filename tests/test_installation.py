@@ -27,6 +27,9 @@ class InstallationSettingsTest(unittest.TestCase):
             path.write_text(settings)
             driver = """set -euo pipefail
 config=${TEST_CONFIG:-}
+theme=${TEST_THEME:-starlight}
+theme_override=${TEST_THEME_OVERRIDE:-0}
+project=$TEST_PROJECT
 resolution=${TEST_RESOLUTION:-}
 resolution_override=${TEST_RESOLUTION_OVERRIDE:-0}
 nvram=${TEST_NVRAM:-1}
@@ -38,11 +41,14 @@ die() { echo "$*" >&2; exit 1; }
             driver += (
                 get_function("add_unlock")
                 + get_function("validate_resolution")
+                + get_function("validate_theme")
                 + get_function("load_installation_settings")
             )
             driver += """load_installation_settings "$1"
 validate_resolution
+validate_theme
 printf '%s\\n' "$config" "$resolution" "$nvram" "${unlock_uuids[@]}"
+printf 'THEME=%s\\n' "$theme"
 """
             return subprocess.run(
                 ["bash", "-c", driver, "settings-test", str(path)],
@@ -51,6 +57,7 @@ printf '%s\\n' "$config" "$resolution" "$nvram" "${unlock_uuids[@]}"
                 text=True,
                 env={
                     **os.environ,
+                    "TEST_PROJECT": str(ROOT),
                     **{
                         f"TEST_{key.upper()}": value for key, value in overrides.items()
                     },
@@ -66,7 +73,7 @@ printf '%s\\n' "$config" "$resolution" "$nvram" "${unlock_uuids[@]}"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             result.stdout.splitlines(),
-            ["/boot/custom/grub.cfg", "2560x1440", "0", "1" * 32],
+            ["/boot/custom/grub.cfg", "2560x1440", "0", "1" * 32, "THEME=starlight"],
         )
 
     def test_explicit_options_override_saved_settings(self):
@@ -94,12 +101,23 @@ printf '%s\\n' "$config" "$resolution" "$nvram" "${unlock_uuids[@]}"
             self.assertEqual(result.stdout.splitlines()[0], value)
             self.assertFalse(marker.exists())
 
+    def test_saved_theme_is_reused_unless_explicitly_overridden(self):
+        saved = "format=1\ntheme=frieren\nresolution=auto\nnvram=0\n"
+        result = self.read_settings(saved)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[-1], "THEME=frieren")
+        result = self.read_settings(saved, theme="starlight", theme_override="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[-1], "THEME=starlight")
+
     def test_rejects_invalid_saved_preferences(self):
         for settings in (
             "format=2\n",
             "format=1\nnvram=maybe\n",
             "format=1\nresolution=invalid\n",
             "format=1\nunknown=1\n",
+            "format=1\ntheme=unknown\n",
+            "format=1\ntheme=../frieren\n",
         ):
             with self.subTest(settings=settings):
                 self.assertNotEqual(self.read_settings(settings).returncode, 0)
@@ -256,6 +274,8 @@ class InstallerOptionsTest(unittest.TestCase):
             ["update", "--help"],
             ["--build", "--jobs", "0"],
             ["--build", "--jobs", "-1"],
+            ["--build", "--theme", "unknown"],
+            ["--build", "--theme", "../frieren"],
         ):
             with self.subTest(arguments=arguments):
                 result = subprocess.run(
