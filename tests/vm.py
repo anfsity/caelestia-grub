@@ -110,7 +110,7 @@ function fixture_boot {{
  sleep --interruptible 2
  halt
 }}
-menuentry 'Windows' --class windows {{ fixture_boot windows; }}
+menuentry 'Windows Boot Manager (on /dev/nvme0n1p1)' --class windows {{ fixture_boot windows; }}
 menuentry 'Arch Linux' --class arch {{ fixture_boot arch; }}
 menuentry 'Ubuntu' --class ubuntu {{ fixture_boot ubuntu; }}
 """

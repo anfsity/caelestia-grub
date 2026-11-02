@@ -106,7 +106,7 @@
    view->need_to_check_sanity = 1;
    view->terminal_border = 3;
    view->terminal_rect.width = view->screen.width * 7 / 10;
-@@ -339,9 +342,59 @@
+@@ -339,9 +342,65 @@
      grub_video_set_area_status (GRUB_VIDEO_AREA_ENABLED);
  }
  
@@ -130,7 +130,13 @@
 +  const char *id = component->ops->get_id (component);
 +  char font[48];
 +  if (!id) return;
-+  if (!grub_strcmp (id, "caelestia-heading"))
++  if (!grub_strcmp (id, "caelestia-brand"))
++    {
++      grub_snprintf (font, sizeof (font), "Caelestia Regular %d",
++                     grub_gfxmenu_font_size (view, 14));
++      component->ops->set_property (component, "font", font);
++    }
++  else if (!grub_strcmp (id, "caelestia-heading"))
 +    {
 +      grub_snprintf (font, sizeof (font), "Caelestia Regular %d",
 +                     grub_gfxmenu_font_size (view, 32));
@@ -166,7 +172,7 @@
    init_terminal (view);
  
    init_background (view);
-@@ -406,7 +459,33 @@
+@@ -406,7 +465,33 @@
  {
    grub_gfxmenu_view_t view = data;
  
@@ -200,7 +206,7 @@
    grub_gfxmenu_redraw_menu (view);
  }
  
-@@ -420,6 +499,43 @@
+@@ -420,6 +505,43 @@
      return;
  
    grub_video_set_area_status (GRUB_VIDEO_AREA_DISABLED);
@@ -244,7 +250,7 @@
  
    term_box->set_content_size (term_box, term_view->terminal_rect.width,
  			      term_view->terminal_rect.height);
-@@ -437,9 +553,11 @@
+@@ -437,9 +559,11 @@
  {
    struct grub_font_glyph *glyph;
    glyph = grub_font_get_glyph (terminal_font, 'M');
@@ -258,7 +264,7 @@
                           + 2 * border_width;
  }
  
-@@ -524,6 +642,14 @@
+@@ -524,6 +648,14 @@
  {
    grub_font_t terminal_font;
  
@@ -273,7 +279,7 @@
    terminal_font = grub_font_get (view->terminal_font_name);
    if (!terminal_font)
      {
-@@ -531,10 +657,17 @@
+@@ -531,10 +663,17 @@
        return;
      }
  
@@ -292,7 +298,7 @@
  
    /* Note: currently there is no API for changing the gfxterm font
       on the fly, so whatever font the initially loaded theme specifies
-@@ -587,69 +720,15 @@
+@@ -587,69 +726,15 @@
  
  }
  
@@ -585,7 +591,7 @@
  	  /* Try to initialize adapter, if it fails, skip to next adapter.  */
 --- /dev/null
 +++ b/grub-core/gfxmenu/carousel.inc
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,164 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later
 + * Included by gui_list.c. Software-rendered carousel, bounded bitmap cache.
 + * No floating point, filesystem writes, menu model changes or boot commands.
@@ -674,7 +680,7 @@
 +  int w = self->bounds.width, h = self->bounds.height;
 +  int scale = grub_min (view->screen.height * 1024 / 1080,
 +                        view->screen.width * 1024 / 1280);
-+  int maximum = grub_min (320 * scale / 1024,
++  int maximum = grub_min (256 * scale / 1024,
 +                          grub_min (w * 25 / 100, h * 61 / 100));
 +  int spacing = grub_min (w * 30 / 100, h * 82 / 100);
 +  int i;
@@ -688,7 +694,7 @@
 +      int level = 16 - grub_min (16, distance * 16 / 1024);
 +      int size = maximum * (16 + level) / 32;
 +      int x = w / 2 + delta * spacing / 1024;
-+      int y = h * 42 / 100;
++      int y = h * 44 / 100;
 +      struct grub_video_bitmap *icon;
 +      grub_menu_entry_t entry;
 +      grub_font_t f;
@@ -706,15 +712,17 @@
 +      {
 +        char name[48];
 +        grub_snprintf (name, sizeof (name), "Caelestia Regular %d",
-+                       grub_gfxmenu_font_size (view, i == view->selected ? 24 : 20));
++                       grub_gfxmenu_font_size (view, i == view->selected ? 32 : 20));
 +        f = grub_font_get (name);
 +      }
 +      /* Never pass signed coordinates to GRUB's unsigned viewport API.
 +         Only complete columns are painted; no offscreen text can leak. */
 +      {
-+        int width = spacing * 90 / 100;
-+        int left = x - width / 2;
-+        int top = y + size / 2 + grub_max (10, h * 2 / 100);
++        /* The focused caption uses a separate row below its neighbours. */
++        int selected = i == view->selected;
++        int width = selected ? w * 94 / 100 : spacing * 90 / 100;
++        int left = (selected ? w / 2 : x) - width / 2;
++        int top = y + size / 2 + grub_max (14, h * 4 / 100);
 +        int height = grub_font_get_ascent (f) + grub_font_get_descent (f) + 4;
 +        grub_video_rect_t clip, title_saved;
 +        if (left < 0 || left + width > w || top < 0 || top + height > h)

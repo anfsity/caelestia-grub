@@ -13,12 +13,23 @@ terminal-width: "84%"
 terminal-height: "66%"
 
 + label {
+  id = "caelestia-brand"
+  left = 8%
+  top = 19%
+  width = 84%
+  height = 3%
+  text = "C A E L E S T I A"
+  align = "center"
+  font = "Caelestia Regular 14"
+  color = "#c7bdd4"
+}
++ label {
   id = "caelestia-heading"
   left = 8%
-  top = 22%
+  top = 24%
   width = 84%
   height = 8%
-  text = "Where to next?"
+  text = "Choose your system"
   align = "center"
   font = "Caelestia Regular 32"
   color = "#f2eafa"
@@ -26,11 +37,11 @@ terminal-height: "66%"
 + boot_menu {
   id = "caelestia-carousel"
   left = 7%
-  top = 31%
+  top = 34%
   width = 86%
-  height = 48%
+  height = 44%
   item_font = "Caelestia Regular 20"
-  selected_item_font = "Caelestia Regular 24"
+  selected_item_font = "Caelestia Regular 32"
   item_color = "#c7bdd4"
   selected_item_color = "#f2eafa"
   icon_width = 384

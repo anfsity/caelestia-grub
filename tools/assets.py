@@ -4,7 +4,6 @@
 import hashlib
 import io
 import json
-import math
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
@@ -70,15 +69,12 @@ def badge(name, size=512):
     im = Image.new("RGBA", (n, n))
     d = ImageDraw.Draw(im)
     color = PALETTE.get(name, "#d0bcff")
-    petals = {"arch": 12, "windows": 4, "ubuntu": 6, "macos": 8, "cachyos": 9}.get(
-        name, 7
+    # A consistent silhouette keeps mixed operating-system logos visually balanced.
+    d.rounded_rectangle(
+        (n * 0.06, n * 0.06, n * 0.94, n * 0.94),
+        radius=n * 0.24,
+        fill=color,
     )
-    points = []
-    for i in range(1440):
-        a = i * math.tau / 1440
-        r = n * 0.46 * (1 + 0.065 * math.cos(petals * a))
-        points.append((n / 2 + r * math.cos(a), n / 2 + r * math.sin(a)))
-    d.polygon(points, fill=color)
     im.alpha_composite(logo, ((n - logo.width) // 2, (n - logo.height) // 2))
     return im.resize((size, size), Image.Resampling.LANCZOS)
 

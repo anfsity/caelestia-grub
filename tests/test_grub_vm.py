@@ -305,6 +305,7 @@ class GrubVMTest(unittest.TestCase):
         self.assert_center((208, 188, 255))
         self.capture().save(ROOT / "build/captures/grub-carousel-1024.png")
         self.key("home")
+        self.capture().save(ROOT / "build/captures/grub-windows-1024.png")
         self.boot_marker("windows")
 
     def test_widescreen_badge_console_and_boot_transition(self):
