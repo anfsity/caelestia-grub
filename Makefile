@@ -1,10 +1,12 @@
-.PHONY: build install assets test run
+.PHONY: build install update assets test run
 PYTHON ?= .venv/bin/python
 
 build:
 	./install.sh --build
 install:
-	./install.sh
+	./install.sh install
+update:
+	./install.sh update
 assets:
 	$(PYTHON) tools/assets.py
 test:

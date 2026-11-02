@@ -25,10 +25,10 @@ sudo apt update
 sudo apt install build-essential bison flex pkg-config libfreetype6-dev gettext curl efibootmgr grub-common patch xz-utils
 ```
 
-RHEL / Fedora
+RHEL / Fedora:
 
 ```sh
-sudo apt install build-essential bison flex pkg-config libfreetype6-dev gettext curl efibootmgr grub2-common patch xz
+sudo dnf install gcc gcc-c++ make bison flex pkgconf-pkg-config freetype-devel gettext curl efibootmgr grub2-tools patch xz
 ```
 
 For encrypted `/boot`, also install `cryptsetup` and `jq`.
@@ -42,7 +42,7 @@ sudo pacman -S --needed sbctl sbsigntools openssl jq
 # Debian / Ubuntu
 sudo apt install sbsigntool openssl jq
 
-# RHEL / Fedora
+# RHEL / Fedora:
 sudo dnf install sbsigntools openssl jq
 ```
 
@@ -53,14 +53,13 @@ Secure Boot needs an existing sbctl key enrolled in firmware **db**. The install
 **2. Download and extract this project**, then open a terminal in its folder:
 
 ```sh
-chmod +x install.sh
-./install.sh
+./install.sh install
 ```
 
-The script builds GRUB and asks for sudo when installing. It detects your boot paths automatically. If detection fails, specify them yourself, for example:
+Run it as your normal user. The script builds GRUB and asks for sudo for privileged operations. It detects your boot paths automatically. If detection fails, specify them yourself, for example:
 
 ```sh
-./install.sh --esp /boot/efi --config /boot/grub/grub.cfg
+./install.sh install --esp /boot/efi --config /boot/grub/grub.cfg
 ```
 
 Use your actual mount point and configuration path. You don't need to copy theme files or run `grub-install` separately.
@@ -69,7 +68,26 @@ Encrypted boot volumes are detected automatically. You'll need a working LUKS pa
 
 **3. After installation succeeds, reboot** and select **Caelestia** in your firmware boot menu. The installer keeps your original bootloader available, so you can select it to go back.
 
-If the screen looks stretched, rerun the installer with `--resolution 1920x1080`, using a resolution supported by your firmware. Rerun it after project updates too.
+If the screen looks stretched, rerun the installer with `--resolution 1920x1080`, using a resolution supported by your firmware. Use `--jobs 4` to limit build parallelism. Running `./install.sh` without a subcommand still installs as before.
+
+## Update
+
+For a Git checkout, run these commands from the project directory:
+
+```sh
+git pull --ff-only
+./install.sh update
+```
+
+For an archive download, extract the new version and run `./install.sh update` in its directory.
+
+The installer saves your `grub.cfg` path, resolution, NVRAM preference and explicit `--unlock` volumes in `EFI/caelestia/install.conf` on the EFI partition. Updates reuse those settings; command-line options override them. If your EFI partition uses a custom mount point, pass it again with `--esp /your/mount/point`.
+
+Older installations have no saved settings. The first update detects the paths as before; repeat any custom `--config`, `--resolution`, `--no-nvram` or `--unlock` options once to save them. Use `--nvram` to override a previously saved `--no-nvram`.
+
+Updates build incrementally, keep matching backups of the previous modules, theme, EFI loader and settings, and restore the previous files if deployment fails. Backup paths are printed after installation. They do not recreate an existing Caelestia firmware entry or overwrite the distro's `grub.cfg`. The existing distro menu is read on each boot, so ordinary distro kernel/menu updates do not require rebuilding Caelestia.
+
+To revert to your distro bootloader, select its original entry in the firmware boot menu.
 
 Press **E** to edit, **C** for the console and **Esc** to return.
 

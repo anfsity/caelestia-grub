@@ -108,13 +108,13 @@ class BootDetectionTest(unittest.TestCase):
         add_unlock = re.search(
             r"^add_unlock\(\) \{\n.*?^\}", script, flags=re.MULTILINE | re.DOTALL
         ).group()
-        probes = re.search(
-            r"^  boot_uuid=\$\(root grub-probe.*?(?=^  config_path=)",
-            script,
-            flags=re.MULTILINE | re.DOTALL,
-        ).group()
+        probes = (
+            "  boot_uuid="
+            + script.split("  boot_uuid=", 1)[1].split("  config_path=", 1)[0]
+        )
         driver = """set -euo pipefail
 config=/test/grub.cfg
+grub_probe=grub-probe
 unlock_uuids=()
 boot_fs=
 abstractions=

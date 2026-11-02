@@ -14,6 +14,8 @@ stage_dir=
 esp=
 config=
 nvram=1
+nvram_override=0
+jobs=${JOBS:-8}
 secure_boot=0
 sign_key=
 sign_cert=
@@ -56,7 +58,7 @@ validate_boot_mappings() {
   local boot_devices boot_device mappings device resolved slave checked=0
   local -a slaves
   for tool in cryptsetup jq od; do command -v "$tool" >/dev/null || die "Encrypted boot storage requires $tool"; done
-  boot_devices=$(root grub-probe --target=device "$config")
+  boot_devices=$(root "$grub_probe" --target=device "$config")
   while IFS= read -r boot_device; do
     mappings=$(root lsblk --inverse --json --paths --output PATH,TYPE "$boot_device")
     while IFS= read -r device; do
@@ -70,27 +72,127 @@ validate_boot_mappings() {
   done <<< "$boot_devices"
   (( checked > 0 )) || die 'Could not validate the encrypted boot mappings; nothing was installed'
 }
+validate_resolution() {
+  [[ -z $resolution || $resolution == auto || $resolution =~ ^[0-9]{3,5}x[0-9]{3,5}$ ]] || die 'Use --resolution WIDTHxHEIGHT or auto'
+}
+
+load_installation_settings() {
+  local settings key value format=
+  settings=$(root cat -- "$1")
+  # Read data rather than sourcing a shell file from the EFI partition.
+  while IFS='=' read -r key value; do
+    case "$key" in
+      format) format=$value ;;
+      config) if [[ -z $config ]]; then config=$value; fi ;;
+      resolution) if (( ! resolution_override )); then resolution=$value; resolution_override=1; fi ;;
+      nvram)
+        [[ $value == 0 || $value == 1 ]] || die 'Invalid saved NVRAM preference'
+        if (( ! nvram_override )); then nvram=$value; fi
+        ;;
+      unlock) add_unlock "$value" ;;
+      *) die "Unknown installation setting: $key" ;;
+    esac
+  done <<< "$settings"
+  [[ $format == 1 ]] || die 'Unsupported installation settings format'
+}
+
+deploy_installation() (
+  local payload=$1 image=$2 settings=$3 target=$4 efi=$5
+  local stamp pending loader_pending settings_pending backup loader_backup settings_backup
+  local prefix_backed_up=0 prefix_published=0 loader_existed=0 settings_existed=0 publishing=0
+  stamp=$(date +%Y%m%d-%H%M%S-%N)
+  pending="$target.new.$stamp"
+  backup="$target.backup.$stamp"
+  loader_pending="$efi/grubx64.efi.new.$stamp"
+  loader_backup="$efi/grubx64.efi.backup.$stamp"
+  settings_pending="$efi/install.conf.new.$stamp"
+  settings_backup="$efi/install.conf.backup.$stamp"
+
+  restore_deployment() {
+    local status=$? restore_failed=0
+    trap - EXIT
+    set +e
+    if (( status != 0 && publishing )); then
+      printf 'Deployment failed; restoring the previous installation.\n' >&2
+      if (( prefix_published )); then root mv -- "$target" "$pending" || restore_failed=1; fi
+      if (( prefix_backed_up )); then root mv -- "$backup" "$target" || restore_failed=1; fi
+      if (( loader_existed )); then root mv -f -- "$loader_backup" "$efi/grubx64.efi" || restore_failed=1
+      else root rm -f -- "$efi/grubx64.efi" || restore_failed=1; fi
+      if (( settings_existed )); then root mv -f -- "$settings_backup" "$efi/install.conf" || restore_failed=1
+      else root rm -f -- "$efi/install.conf" || restore_failed=1; fi
+    fi
+    if (( restore_failed )); then
+      printf 'Could not restore every file. Recovery copies: %s, %s, %s\n' "$backup" "$loader_backup" "$settings_backup" >&2
+    fi
+    root rm -rf -- "$pending"
+    root rm -f -- "$loader_pending" "$settings_pending"
+    exit "$status"
+  }
+  trap restore_deployment EXIT
+  root install -d -- "$efi"
+  # EFI FAT filesystems cannot preserve Unix ownership or other POSIX metadata.
+  root cp -R -- "$payload" "$pending"
+  root install -m644 -- "$image" "$loader_pending"
+  root install -m644 -- "$settings" "$settings_pending"
+  if root test -f "$efi/grubx64.efi"; then
+    root cp -- "$efi/grubx64.efi" "$loader_backup"
+    loader_existed=1
+  fi
+  if root test -f "$efi/install.conf"; then
+    root cp -- "$efi/install.conf" "$settings_backup"
+    settings_existed=1
+  fi
+  publishing=1
+  if root test -d "$target"; then
+    root mv -- "$target" "$backup"
+    prefix_backed_up=1
+  fi
+  root mv -- "$pending" "$target"
+  prefix_published=1
+  root mv -f -- "$loader_pending" "$efi/grubx64.efi"
+  root mv -f -- "$settings_pending" "$efi/install.conf"
+  if (( secure_boot )); then root sbctl sign --save "$efi/grubx64.efi"; fi
+  if (( nvram )); then
+    local entries
+    entries=$(root efibootmgr -v)
+    if [[ ${entries,,} != *'\efi\caelestia\grubx64.efi'* ]]; then
+      root efibootmgr --create --disk "/dev/$parent" --part "$partition" \
+        --label Caelestia --loader '\EFI\caelestia\grubx64.efi'
+    fi
+  fi
+  if (( prefix_backed_up )); then
+    printf 'Previous files: %s\n' "$backup"
+  fi
+  if (( loader_existed )); then printf 'Previous loader: %s\n' "$loader_backup"; fi
+)
+
 usage() {
   cat <<'EOF'
-Usage: ./install.sh [options]
+Usage: ./install.sh [install|update] [options]
 
-Default: build and install the carousel, then create a Caelestia UEFI boot entry.
+install (default): build and install an independent Caelestia UEFI loader.
+update: rebuild an existing installation, reusing its paths and preferences.
   --build          Build patched GRUB only; no system changes
   --stage DIR      Assemble a portable QEMU test directory; no system changes
   --esp DIR        EFI System Partition (otherwise detected)
-  --config FILE    Existing grub.cfg (otherwise detected)
-  --resolution WxH Preferred firmware resolution (otherwise detected; auto allowed)
+  --config FILE    Existing grub.cfg (remembered after installation)
+  --resolution WxH Preferred firmware resolution (auto allowed; remembered)
+  --jobs COUNT     Parallel build jobs (default: JOBS or 8)
   --no-nvram       Install files without creating a firmware boot entry
+  --nvram          Create a missing boot entry (override saved --no-nvram)
   --unlock UUID    Unlock a LUKS volume before reading grub.cfg (repeatable;
                    boot volumes are detected automatically when installing)
   --sign-key FILE  Test signing key (only with --stage)
   --sign-cert FILE Test signing certificate (only with --stage)
   --help           Show this help
 
+Build as your normal user; sudo is requested only for privileged operations.
 Requires x86_64 UEFI. The existing distro bootloader and grub.cfg are preserved.
 Secure Boot: uses an existing sbctl db key already enrolled in firmware.
+Updates keep a backup and restore the previous payload if deployment fails.
 EOF
 }
+if [[ ${1:-} == install || ${1:-} == update ]]; then mode=$1; shift; fi
 while (( $# )); do
   case "$1" in
     --build) [[ $mode == install ]] || die 'Choose one build/stage mode'; mode=build; shift ;;
@@ -98,7 +200,9 @@ while (( $# )); do
     --esp) [[ $# -ge 2 ]] || die '--esp requires a directory'; esp=$2; shift 2 ;;
     --config) [[ $# -ge 2 ]] || die '--config requires a file'; config=$2; shift 2 ;;
     --resolution) [[ $# -ge 2 ]] || die '--resolution requires WIDTHxHEIGHT or auto'; resolution=$2; resolution_override=1; shift 2 ;;
-    --no-nvram) nvram=0; shift ;;
+    --jobs) [[ $# -ge 2 ]] || die '--jobs requires a positive integer'; jobs=$2; shift 2 ;;
+    --no-nvram) nvram=0; nvram_override=1; shift ;;
+    --nvram) nvram=1; nvram_override=1; shift ;;
     --unlock) [[ $# -ge 2 ]] || die '--unlock requires a LUKS UUID'; add_unlock "$2"; shift 2 ;;
     --sign-key) [[ $# -ge 2 ]] || die '--sign-key requires a file'; sign_key=$2; shift 2 ;;
     --sign-cert) [[ $# -ge 2 ]] || die '--sign-cert requires a file'; sign_cert=$2; shift 2 ;;
@@ -106,27 +210,21 @@ while (( $# )); do
     *) die "Unknown option: $1" ;;
   esac
 done
-[[ -z $resolution || $resolution == auto || $resolution =~ ^[0-9]{3,5}x[0-9]{3,5}$ ]] || die 'Use --resolution WIDTHxHEIGHT or auto'
+[[ $jobs =~ ^[1-9][0-9]*$ ]] || die 'Use --jobs with a positive integer'
 [[ $(uname -m) == x86_64 ]] || die 'Only x86_64 is supported'
 if [[ -n $sign_key || -n $sign_cert ]]; then
   [[ $mode == stage && -f $sign_key && -f $sign_cert ]] || die 'Custom signing keys require --stage and both --sign-key/--sign-cert'
   for tool in sbsign sbverify; do command -v "$tool" >/dev/null || die "Missing signing dependency: $tool"; done
 fi
 
-if [[ $mode == install ]]; then
+if [[ $mode == install || $mode == update ]]; then
   [[ -d /sys/firmware/efi ]] || die 'Boot the system in UEFI mode before installing'
-  for tool in grub-probe grub-mkrelpath findmnt lsblk install; do
+  grub_probe=$(command -v grub-probe || command -v grub2-probe) || die 'Missing grub-probe or grub2-probe'
+  grub_mkrelpath=$(command -v grub-mkrelpath || command -v grub2-mkrelpath) || die 'Missing grub-mkrelpath or grub2-mkrelpath'
+  for tool in findmnt lsblk install; do
     command -v "$tool" >/dev/null || die "Missing dependency: $tool"
   done
   if (( EUID != 0 )); then command -v sudo >/dev/null || die 'Install sudo or run as root'; fi
-  if (( nvram )); then command -v efibootmgr >/dev/null || die 'Install efibootmgr or use --no-nvram'; fi
-  if [[ -z $config ]]; then
-    for candidate in /boot/grub/grub.cfg /boot/grub2/grub.cfg; do
-      if root test -f "$candidate"; then config=$candidate; break; fi
-    done
-  fi
-  [[ -n $config && $config == /* ]] || die 'Use --config /absolute/path/to/grub.cfg'
-  root test -f "$config" || die "Configuration does not exist: $config"
   if [[ -z $esp ]]; then
     for candidate in /efi /boot/efi /boot; do
       if [[ $(findmnt -rn --mountpoint "$candidate" -o FSTYPE 2>/dev/null || true) == vfat ]]; then esp=$candidate; break; fi
@@ -134,6 +232,17 @@ if [[ $mode == install ]]; then
   fi
   [[ -n $esp && $esp == /* ]] || die 'Mount the EFI System Partition or specify --esp'
   [[ $(findmnt -rn --mountpoint "$esp" -o FSTYPE 2>/dev/null || true) == vfat ]] || die "$esp is not a mounted FAT EFI System Partition"
+  settings_file="$esp/EFI/caelestia/install.conf"
+  if root test -f "$settings_file"; then load_installation_settings "$settings_file"; fi
+  if [[ -z $config ]]; then
+    for candidate in /boot/grub/grub.cfg /boot/grub2/grub.cfg; do
+      if root test -f "$candidate"; then config=$candidate; break; fi
+    done
+  fi
+  [[ -n $config && $config == /* ]] || die 'Use --config /absolute/path/to/grub.cfg'
+  root test -f "$config" || die "Configuration does not exist: $config"
+  validate_resolution
+  if (( nvram )); then command -v efibootmgr >/dev/null || die 'Install efibootmgr or use --no-nvram'; fi
   for variable in /sys/firmware/efi/efivars/SecureBoot-*; do
     [[ -e $variable ]] || continue
     state=$(root od -An -tu1 -j4 -N1 "$variable")
@@ -154,13 +263,13 @@ if [[ $mode == install ]]; then
     (( trusted )) || die 'The sbctl signing certificate is not enrolled in firmware db; no keys were changed'
     printf 'Secure Boot enabled: using the existing enrolled sbctl key.\n'
   fi
-  boot_uuid=$(root grub-probe --target=fs_uuid "$config")
-  boot_fs=$(root grub-probe --target=fs "$config")
+  boot_uuid=$(root "$grub_probe" --target=fs_uuid "$config")
+  boot_fs=$(root "$grub_probe" --target=fs "$config")
   [[ $boot_fs =~ ^[a-zA-Z0-9_]+$ ]] || die 'Unsupported GRUB filesystem module name'
   # Probe only the filesystem holding grub.cfg, not every encrypted disk.
   # GRUB traverses backing LVM/RAID members in dependency order.
-  abstractions=$(root grub-probe --target=abstraction "$config")
-  crypto_probe=$(root grub-probe --target=cryptodisk_uuid "$config")
+  abstractions=$(root "$grub_probe" --target=abstraction "$config")
+  crypto_probe=$(root "$grub_probe" --target=cryptodisk_uuid "$config")
   read -r -a detected_uuids <<< "${crypto_probe//$'\n'/ }"
   manual_uuids=("${unlock_uuids[@]}")
   unlock_uuids=()
@@ -170,13 +279,16 @@ if [[ $mode == install ]]; then
     die 'Encrypted boot filesystem detected, but GRUB could not determine its LUKS UUID'
   fi
   if [[ " $abstractions " == *' cryptodisk '* ]]; then validate_boot_mappings; fi
-  config_path=$(root grub-mkrelpath "$config")
+  config_path=$(root "$grub_mkrelpath" "$config")
   prefix_path="${config_path%/*}/caelestia"
   [[ $boot_uuid =~ ^[a-zA-Z0-9-]+$ ]] || die 'Unsupported boot filesystem UUID'
   [[ $config_path =~ ^/[a-zA-Z0-9_./@:+-]+$ ]] || die 'Unsupported characters in the GRUB configuration path'
   target="$(dirname -- "$config")/caelestia"
   if root test -e "$target" && ! root test -f "$target/.caelestia-managed"; then
     die "Refusing to replace an unmanaged directory: $target"
+  fi
+  if [[ $mode == update ]]; then
+    root test -f "$target/.caelestia-managed" && root test -f "$esp/EFI/caelestia/grubx64.efi" || die 'No complete Caelestia installation found; run ./install.sh install first'
   fi
   if (( nvram )); then
     esp_device=$(readlink -f -- "$(findmnt -rn --mountpoint "$esp" -o SOURCE)")
@@ -185,6 +297,7 @@ if [[ $mode == install ]]; then
     [[ -n $parent && $partition =~ ^[0-9]+$ ]] || die 'Cannot determine the ESP disk and partition; use --no-nvram'
   fi
 else
+  validate_resolution
   config_path=/boot/grub/grub.cfg
   prefix_path=/boot/grub/caelestia
 fi
@@ -192,7 +305,7 @@ fi
 # Some firmware (including OVMF) exposes modes but no EDID protocol to GRUB.
 # Use Linux's preferred mode when connected monitors agree; GRUB validates it
 # against GOP and falls back if unavailable. --resolution overrides this hint.
-if [[ $mode == install && -z $resolution ]]; then
+if [[ ( $mode == install || $mode == update ) && -z $resolution ]]; then
   connected=()
   for connector in /sys/class/drm/card*-*; do
     [[ -r $connector/status && -r $connector/modes ]] || continue
@@ -241,7 +354,7 @@ if [[ ! -f $build_dir/Makefile ]]; then
     }
 fi
 printf 'Building Caelestia GRUB…\n'
-make -C "$build_dir" -j"${JOBS:-8}" > "$build_dir/build.log" 2>&1 || {
+make -C "$build_dir" -j"$jobs" > "$build_dir/build.log" 2>&1 || {
   tail -50 "$build_dir/build.log"; die 'GRUB build failed';
 }
 if [[ $mode == build ]]; then printf 'Built: %s\n' "$build_dir"; exit 0; fi
@@ -377,27 +490,11 @@ if [[ $mode == stage ]]; then
   exit 0
 fi
 
-stamp=$(date +%Y%m%d-%H%M%S)
 if root test -f "$target/grubenv"; then root cp -- "$target/grubenv" "$payload/grubenv"
 elif root test -f "$(dirname -- "$config")/grubenv"; then root cp -- "$(dirname -- "$config")/grubenv" "$payload/grubenv"; fi
-pending="$target.new.$stamp"
-root cp -a -- "$payload" "$pending"
-if root test -d "$target"; then root mv -- "$target" "$target.backup.$stamp"; fi
-root mv -- "$pending" "$target"
-root install -d -- "$esp/EFI/caelestia"
-if root test -f "$esp/EFI/caelestia/grubx64.efi"; then
-  root cp -- "$esp/EFI/caelestia/grubx64.efi" "$esp/EFI/caelestia/grubx64.efi.backup.$stamp"
-fi
-root install -m644 -- "$work/grubx64.efi" "$esp/EFI/caelestia/grubx64.efi.new"
-root mv -- "$esp/EFI/caelestia/grubx64.efi.new" "$esp/EFI/caelestia/grubx64.efi"
-if (( secure_boot )); then
-  root sbctl sign --save "$esp/EFI/caelestia/grubx64.efi"
-fi
-if (( nvram )); then
-  entries=$(root efibootmgr -v)
-  if [[ ${entries,,} != *'\efi\caelestia\grubx64.efi'* ]]; then
-    root efibootmgr --create --disk "/dev/$parent" --part "$partition" \
-      --label Caelestia --loader '\EFI\caelestia\grubx64.efi'
-  fi
-fi
+printf 'format=1\nconfig=%s\nresolution=%s\nnvram=%s\n' \
+  "$config" "${resolution:-auto}" "$nvram" > "$work/install.conf"
+for uuid in "${manual_uuids[@]}"; do printf 'unlock=%s\n' "$uuid" >> "$work/install.conf"; done
+deploy_installation "$payload" "$work/grubx64.efi" "$work/install.conf" "$target" "$esp/EFI/caelestia"
 printf 'Installed Caelestia carousel.\nMenu: %s\nLoader: %s/EFI/caelestia/grubx64.efi\n' "$config" "$esp"
+printf 'Update from this source directory: ./install.sh update --esp %q\n' "$esp"
