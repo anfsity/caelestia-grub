@@ -13,17 +13,6 @@ terminal-width: "84%"
 terminal-height: "66%"
 
 + label {
-  id = "caelestia-brand"
-  left = 8%
-  top = 19%
-  width = 84%
-  height = 3%
-  text = "C A E L E S T I A"
-  align = "center"
-  font = "Caelestia Regular 14"
-  color = "#c7bdd4"
-}
-+ label {
   id = "caelestia-heading"
   left = 8%
   top = 24%

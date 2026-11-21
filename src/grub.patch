@@ -928,7 +928,7 @@
 +  panel->set_content_size (panel, w - panel->get_left_pad (panel) - panel->get_right_pad (panel),
 +                          h - panel->get_top_pad (panel) - panel->get_bottom_pad (panel));
 +  panel->draw (panel, 0, 0);
-+  cards_draw_text (small, "CAELESTIA / FRIEREN", ink, pad,
++  cards_draw_text (small, "FRIEREN", ink, pad,
 +                   h * 9 / 100 + grub_font_get_ascent (small), row_width);
 +  cards_draw_text (heading, "Choose your system", ink, pad,
 +                   h * 16 / 100 + grub_font_get_ascent (heading), row_width);
