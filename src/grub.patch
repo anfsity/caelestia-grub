@@ -1,26 +1,50 @@
 --- a/include/grub/gfxmenu_view.h
 +++ b/include/grub/gfxmenu_view.h
-@@ -44,6 +44,8 @@
+@@ -44,6 +44,11 @@
                                    const char *pattern, const char *theme_dir);
  
  void grub_gfxmenu_view_draw (grub_gfxmenu_view_t view);
-+void grub_gfxmenu_view_boot (grub_gfxmenu_view_t view, const char *title);
++void grub_gfxmenu_view_boot (grub_gfxmenu_view_t view, grub_menu_entry_t entry);
 +int grub_gfxmenu_font_size (grub_gfxmenu_view_t view, int base);
++void grub_gfxmenu_entry_accent (grub_menu_entry_t entry, int rgb[3]);
++void grub_gfxmenu_entry_screen_accent (grub_menu_entry_t entry, int rgb[3]);
++void grub_gfxmenu_tick (void *data);
  
  void
  grub_gfxmenu_redraw_menu (grub_gfxmenu_view_t view);
-@@ -111,6 +113,8 @@
+@@ -111,6 +116,21 @@
    int double_repaint;
  
    int selected;
 +  int carousel_position;
 +  int carousel_animating;
++  int split_pos;
++  int split_vel;
++  int split_color[3];
++  int split_color_init;
++  int split_scramble_fp;
++  int split_ripple_active;
++  grub_uint64_t split_ripple_start;
++  grub_uint64_t split_last_tick;
++  int boot_accent[3];
++  int boot_line_fp;
++  int timeout_active;
++  int timeout_remaining;
++  grub_uint64_t timeout_mark_ms;
  
    grub_video_rect_t progress_message_frame;
  
 --- a/include/grub/menu_viewer.h
 +++ b/include/grub/menu_viewer.h
-@@ -42,6 +42,8 @@
+@@ -34,6 +34,7 @@
+   void (*print_timeout) (int timeout, void *data);
+   void (*clear_timeout) (void *data);
+   void (*fini) (void *fini);
++  void (*tick) (void *data);
+ };
+ 
+ void grub_menu_register_viewer (struct grub_menu_viewer *viewer);
+@@ -42,6 +43,8 @@
  grub_menu_try_text (struct grub_term_output *term,
  		    int entry, grub_menu_t menu, int nested);
  
@@ -31,7 +55,16 @@
  
 --- a/grub-core/gfxmenu/gui_list.c
 +++ b/grub-core/gfxmenu/gui_list.c
-@@ -68,6 +68,11 @@
+@@ -24,6 +24,8 @@
+ #include <grub/gfxmenu_view.h>
+ #include <grub/gfxwidgets.h>
+ #include <grub/color.h>
++#include <grub/env.h>
++#include <grub/time.h>
+ 
+ enum scrollbar_slice_mode {
+   SCROLLBAR_SLICE_WEST,
+@@ -68,6 +70,24 @@
    int scrollbar_bottom_pad;
  
    int first_shown_index;
@@ -40,10 +73,23 @@
 +    int maximum;
 +    struct grub_video_bitmap *sizes[17];
 +  } carousel_cache[7];
++  struct {
++    int width;
++    int height;
++    int radius;
++    int fillet;
++    struct grub_video_bitmap *backdrop;
++    struct grub_video_bitmap *corner_tl;
++    struct grub_video_bitmap *corner_bl;
++    struct grub_video_bitmap *corner_tr;
++    struct grub_video_bitmap *corner_br;
++    struct grub_video_bitmap *fillet_top;
++    struct grub_video_bitmap *fillet_bot;
++  } split_cache;
  
    int need_to_recreate_boxes;
    char *theme_dir;
-@@ -86,11 +91,14 @@
+@@ -86,11 +106,14 @@
  
  typedef struct grub_gui_list_impl *list_impl_t;
  
@@ -58,16 +104,16 @@
    grub_free (self->theme_dir);
    grub_free (self->menu_box_pattern);
    grub_free (self->item_box_pattern);
-@@ -233,6 +241,8 @@
- 
+@@ -234,6 +257,8 @@
    return grub_gfxmenu_icon_manager_get_icon (self->icon_manager, entry);
  }
-+
-+#include "carousel.inc"
  
++#include "carousel.inc"
++
  static void
  make_selected_item_visible (list_impl_t self)
-@@ -462,6 +472,16 @@
+ {
+@@ -462,6 +487,21 @@
    if (!grub_video_have_common_points (region, &self->bounds))
      return;
  
@@ -81,10 +127,15 @@
 +      cards_paint (self);
 +      return;
 +    }
++  if (self->id && grub_strcmp (self->id, "caelestia-split") == 0)
++    {
++      split_paint (self);
++      return;
++    }
    check_boxes (self);
  
    if (! self->menu_box || ! self->selected_item_box || ! self->item_box)
-@@ -858,6 +878,7 @@
+@@ -858,6 +898,7 @@
                     grub_gfxmenu_view_t view)
  {
    list_impl_t self = vself;
@@ -119,16 +170,31 @@
  #include <grub/file.h>
  #include <grub/misc.h>
  #include <grub/mm.h>
-@@ -72,6 +73,8 @@
+@@ -72,6 +73,23 @@
    view->screen.width = width;
    view->screen.height = height;
  
 +  view->carousel_position = 0;
 +  view->carousel_animating = 0;
++  view->split_pos = 0;
++  view->split_vel = 0;
++  view->split_color[0] = view->split_color[1] = view->split_color[2] = 0;
++  view->split_color_init = 0;
++  view->split_scramble_fp = 1024;
++  view->split_ripple_active = 0;
++  view->split_ripple_start = 0;
++  view->split_last_tick = 0;
++  view->boot_accent[0] = 240;
++  view->boot_accent[1] = 237;
++  view->boot_accent[2] = 230;
++  view->boot_line_fp = 1024;
++  view->timeout_active = 0;
++  view->timeout_remaining = 0;
++  view->timeout_mark_ms = 0;
    view->need_to_check_sanity = 1;
    view->terminal_border = 3;
    view->terminal_rect.width = view->screen.width * 7 / 10;
-@@ -127,6 +130,13 @@
+@@ -127,6 +145,13 @@
  {
    if (!view)
      return;
@@ -142,7 +208,127 @@
    while (grub_gfxmenu_timeout_notifications)
      {
        struct grub_gfxmenu_timeout_notify *p;
-@@ -339,9 +349,94 @@
+@@ -218,6 +243,85 @@
+     }
+ }
+ 
++static int
++is_split_layout (void)
++{
++  const char *layout = grub_env_get ("caelestia_layout");
++  return layout && grub_strcmp (layout, "split") == 0;
++}
++
++static int
++entry_accent_family (grub_menu_entry_t entry)
++{
++  struct grub_menu_entry_class *c;
++  if (entry)
++    for (c = entry->classes; c; c = c->next)
++      {
++        if (!c->name)
++          continue;
++        if (!grub_strcmp (c->name, "arch") || !grub_strcmp (c->name, "archlinux")
++            || !grub_strcmp (c->name, "arch-linux") || !grub_strcmp (c->name, "artix")
++            || !grub_strcmp (c->name, "endeavouros") || !grub_strcmp (c->name, "nixos")
++            || !grub_strcmp (c->name, "gentoo") || !grub_strcmp (c->name, "void"))
++          return 1;
++        if (!grub_strcmp (c->name, "cachyos") || !grub_strcmp (c->name, "manjaro")
++            || !grub_strcmp (c->name, "opensuse") || !grub_strcmp (c->name, "suse")
++            || !grub_strcmp (c->name, "opensuse-tumbleweed")
++            || !grub_strcmp (c->name, "opensuse-leap") || !grub_strcmp (c->name, "mint")
++            || !grub_strcmp (c->name, "linuxmint") || !grub_strcmp (c->name, "alpine"))
++          return 2;
++        if (!grub_strcmp (c->name, "windows") || !grub_strcmp (c->name, "win")
++            || !grub_strcmp (c->name, "windows10") || !grub_strcmp (c->name, "windows11")
++            || !grub_strcmp (c->name, "fedora") || !grub_strcmp (c->name, "kubuntu")
++            || !grub_strcmp (c->name, "kdeneon") || !grub_strcmp (c->name, "neon"))
++          return 3;
++        if (!grub_strcmp (c->name, "ubuntu") || !grub_strcmp (c->name, "debian")
++            || !grub_strcmp (c->name, "pop") || !grub_strcmp (c->name, "popos")
++            || !grub_strcmp (c->name, "pop-os") || !grub_strcmp (c->name, "xubuntu")
++            || !grub_strcmp (c->name, "lubuntu"))
++          return 4;
++        if (!grub_strcmp (c->name, "recovery") || !grub_strcmp (c->name, "memtest"))
++          return 5;
++      }
++  if (entry && entry->submenu)
++    return 5;
++  return 0;
++}
++
++void
++grub_gfxmenu_entry_accent (grub_menu_entry_t entry, int rgb[3])
++{
++  static const int table[6][3] = {
++    { 220,  72,  34 },
++    {  35,  92, 224 },
++    {  13, 142, 126 },
++    {   2, 118, 198 },
++    { 226,  74,  34 },
++    { 124,  58, 212 },
++  };
++  int f = entry_accent_family (entry);
++  rgb[0] = table[f][0];
++  rgb[1] = table[f][1];
++  rgb[2] = table[f][2];
++}
++
++void
++grub_gfxmenu_entry_screen_accent (grub_menu_entry_t entry, int rgb[3])
++{
++  static const int table[6][3] = {
++    { 196, 208, 224 },
++    { 122, 162, 247 },
++    {  79, 214, 192 },
++    {  90, 182, 255 },
++    { 251, 146,  86 },
++    { 192, 132, 252 },
++  };
++  int f = entry_accent_family (entry);
++  rgb[0] = table[f][0];
++  rgb[1] = table[f][1];
++  rgb[2] = table[f][2];
++}
++
+ void
+ grub_gfxmenu_print_timeout (int timeout, void *data)
+ {
+@@ -226,6 +330,16 @@
+   if (view->first_timeout == -1)
+     view->first_timeout = timeout;
+ 
++  view->timeout_active = 1;
++  view->timeout_remaining = timeout;
++  view->timeout_mark_ms = grub_get_time_ms ();
++
++  if (is_split_layout ())
++    {
++      grub_gfxmenu_redraw_menu (view);
++      return;
++    }
++
+   update_timeouts (1, -view->first_timeout, -timeout, 0);
+   redraw_timeouts (view);
+   grub_video_swap_buffers ();
+@@ -237,6 +351,16 @@
+ grub_gfxmenu_clear_timeout (void *data)
+ {
+   struct grub_gfxmenu_view *view = data;
++  int was_active = view->timeout_active;
++
++  view->timeout_active = 0;
++
++  if (is_split_layout ())
++    {
++      if (was_active)
++        grub_gfxmenu_redraw_menu (view);
++      return;
++    }
+ 
+   update_timeouts (0, 1, 0, 0);
+   redraw_timeouts (view);
+@@ -339,9 +463,94 @@
      grub_video_set_area_status (GRUB_VIDEO_AREA_ENABLED);
  }
  
@@ -237,7 +423,95 @@
    init_terminal (view);
  
    init_background (view);
-@@ -406,7 +501,35 @@
+@@ -401,12 +610,158 @@
+     }
+ }
+ 
++static void
++split_step_spring (grub_gfxmenu_view_t view, int dt)
++{
++  int target_pos = view->selected * 1024;
++  int err = target_pos - view->split_pos;
++  int acc = err * 240 - view->split_vel * 24;
++  int target[3], c;
++  int step = grub_min (256, grub_max (16, dt * 3));
++
++  view->split_vel += acc * dt / 1000;
++  view->split_pos += view->split_vel * dt / 1000;
++  if (grub_abs (target_pos - view->split_pos) <= 4
++      && grub_abs (view->split_vel) <= 32)
++    {
++      view->split_pos = target_pos;
++      view->split_vel = 0;
++    }
++
++  grub_gfxmenu_entry_accent (grub_menu_get_entry (view->menu, view->selected), target);
++  if (!view->split_color_init)
++    {
++      for (c = 0; c < 3; c++)
++        view->split_color[c] = target[c] * 256;
++      view->split_color_init = 1;
++      return;
++    }
++  for (c = 0; c < 3; c++)
++    {
++      int diff = target[c] * 256 - view->split_color[c];
++      if (grub_abs (diff) <= 256)
++        view->split_color[c] = target[c] * 256;
++      else
++        view->split_color[c] += diff * step / 256;
++    }
++}
++
++void
++grub_gfxmenu_tick (void *data)
++{
++  grub_gfxmenu_view_t view = data;
++  const char *motion;
++  int target[3], target_pos;
++  int fast_anim;
++  grub_uint64_t now;
++  int min_dt, dt;
++
++  if (!view || !view->menu || view->menu->size <= 0 || !is_split_layout ())
++    return;
++
++  motion = grub_env_get ("caelestia_motion");
++  if (motion && grub_strcmp (motion, "0") == 0)
++    return;
++
++  target_pos = view->selected * 1024;
++  grub_gfxmenu_entry_accent (grub_menu_get_entry (view->menu, view->selected), target);
++  fast_anim = view->split_pos != target_pos || view->split_vel != 0
++    || view->split_scramble_fp < 1024
++    || view->split_ripple_active
++    || (view->split_color_init
++        && (view->split_color[0] != target[0] * 256
++            || view->split_color[1] != target[1] * 256
++            || view->split_color[2] != target[2] * 256));
++
++  now = grub_get_time_ms ();
++  min_dt = fast_anim ? 16 : 42;
++  if (now - view->split_last_tick < (grub_uint64_t) min_dt)
++    {
++      grub_millisleep (4);
++      return;
++    }
++  dt = (int) grub_min ((grub_uint64_t) 50, now - view->split_last_tick);
++  view->split_last_tick = now;
++
++  if (fast_anim)
++    split_step_spring (view, dt);
++  if (view->split_scramble_fp < 1024)
++    view->split_scramble_fp = grub_min (1024, view->split_scramble_fp + dt * 1024 / 180);
++  if (view->split_ripple_active && now - view->split_ripple_start >= 420)
++    view->split_ripple_active = 0;
++
++  grub_gfxmenu_redraw_menu (view);
++}
++
+ void
+ grub_gfxmenu_set_chosen_entry (int entry, void *data)
  {
    grub_gfxmenu_view_t view = data;
  
@@ -246,6 +520,41 @@
 +  const char *layout = grub_env_get ("caelestia_layout");
 +  int previous = view->selected;
    view->selected = entry;
++
++  if (layout && grub_strcmp (layout, "split") == 0)
++    {
++      if (motion && grub_strcmp (motion, "0") == 0)
++        {
++          view->split_pos = entry * 1024;
++          view->split_vel = 0;
++          view->split_color_init = 0;
++          view->split_scramble_fp = 1024;
++          view->split_ripple_active = 0;
++        }
++      else
++        {
++          if (!view->split_color_init)
++            {
++              int prev_rgb[3], c;
++              grub_gfxmenu_entry_accent (grub_menu_get_entry (view->menu, previous),
++                                         prev_rgb);
++              for (c = 0; c < 3; c++)
++                view->split_color[c] = prev_rgb[c] * 256;
++              view->split_color_init = 1;
++            }
++          if (entry != previous)
++            {
++              view->split_scramble_fp = 0;
++              view->split_ripple_active = 1;
++              view->split_ripple_start = grub_get_time_ms ();
++            }
++          view->split_last_tick = grub_get_time_ms ();
++          split_step_spring (view, 16);
++        }
++      grub_gfxmenu_redraw_menu (view);
++      return;
++    }
++
 +  if (enabled && grub_strcmp (enabled, "1") == 0
 +      && (!motion || grub_strcmp (motion, "0") != 0)
 +      && (!layout || grub_strcmp (layout, "carousel") == 0)
@@ -273,11 +582,10 @@
    grub_gfxmenu_redraw_menu (view);
  }
  
-@@ -420,6 +543,43 @@
-     return;
+@@ -421,6 +776,96 @@
  
    grub_video_set_area_status (GRUB_VIDEO_AREA_DISABLED);
-+
+ 
 +  if (term_view->theme_path && grub_strstr (term_view->theme_path, "/carousel.txt"))
 +    {
 +      grub_video_rect_t saved, header;
@@ -285,39 +593,93 @@
 +      char font_name[48];
 +      char *title = term_view->progress_message_text
 +        ? grub_xasprintf ("Booting %s", term_view->progress_message_text) : 0;
-+      int size = grub_gfxmenu_font_size (term_view, 24);
++      int split = is_split_layout ();
++      int size = grub_gfxmenu_font_size (term_view, split ? 32 : 24);
++      grub_video_color_t heading_color;
++      int line_h, gap, rule_y;
++
 +      grub_snprintf (font_name, sizeof (font_name), "Caelestia Regular %d", size);
 +      font = grub_font_get (font_name);
 +      grub_video_set_viewport (0, 0, term_view->screen.width, term_view->screen.height);
 +      /* A single quiet surface, rather than a frame around another frame. */
 +      grub_video_fill_rect (grub_video_map_rgba_color (term_view->message_bg_color),
 +                            0, 0, term_view->screen.width, term_view->screen.height);
-+      header.x = term_view->terminal_rect.x;
-+      header.y = grub_max (0, (int) term_view->terminal_rect.y - size * 3);
-+      header.width = term_view->terminal_rect.width;
-+      header.height = size * 2;
-+      grub_gui_set_viewport (&header, &saved);
-+      grub_font_draw_string (title ? title : "Console", font,
-+                            grub_video_map_rgb (208, 188, 255), 0,
-+                            grub_font_get_ascent (font));
-+      grub_gui_restore_viewport (&saved);
++      if (split)
++        {
++          int rgb[3];
++          if (term_view->progress_message_text)
++            {
++              rgb[0] = term_view->boot_accent[0];
++              rgb[1] = term_view->boot_accent[1];
++              rgb[2] = term_view->boot_accent[2];
++            }
++          else
++            grub_gfxmenu_entry_screen_accent (
++              term_view->menu
++                ? grub_menu_get_entry (term_view->menu, term_view->selected)
++                : 0,
++              rgb);
++          heading_color = grub_video_map_rgb ((grub_uint8_t) rgb[0],
++                                              (grub_uint8_t) rgb[1],
++                                              (grub_uint8_t) rgb[2]);
++          line_h = grub_font_get_ascent (font) + grub_font_get_descent (font);
++          gap = grub_max (8, size / 3);
++          header.x = term_view->terminal_rect.x;
++          header.y = grub_max (12, (int) term_view->terminal_rect.y - line_h - gap * 2 - 14);
++          header.width = term_view->terminal_rect.width;
++          header.height = line_h + 4;
++          grub_gui_set_viewport (&header, &saved);
++          grub_font_draw_string (title ? title : "Console", font, heading_color, 0,
++                                 grub_font_get_ascent (font));
++          grub_gui_restore_viewport (&saved);
++          rule_y = header.y + line_h + gap;
++          if (term_view->progress_message_text)
++            {
++              int fp = grub_max (0, grub_min (1024, term_view->boot_line_fp));
++              int bar_w = (int) term_view->terminal_rect.width * fp / 1024;
++              grub_video_fill_rect (grub_video_map_rgb (28, 32, 42),
++                                    header.x, rule_y, header.width, 1);
++              if (bar_w > 0)
++                grub_video_fill_rect (heading_color, header.x, rule_y, bar_w, 2);
++            }
++          else
++            grub_video_fill_rect (grub_video_map_rgb (38, 43, 56),
++                                  header.x, rule_y, header.width, 1);
++        }
++      else
++        {
++          header.x = term_view->terminal_rect.x;
++          header.y = grub_max (0, (int) term_view->terminal_rect.y - size * 3);
++          header.width = term_view->terminal_rect.width;
++          header.height = size * 2;
++          grub_gui_set_viewport (&header, &saved);
++          grub_font_draw_string (title ? title : "Console", font,
++                                grub_video_map_rgb (208, 188, 255), 0,
++                                grub_font_get_ascent (font));
++          grub_gui_restore_viewport (&saved);
++        }
 +      grub_free (title);
 +      if (!term_view->progress_message_text)
 +        {
-+          grub_snprintf (font_name, sizeof (font_name), "Caelestia Regular %d",
-+                         grub_gfxmenu_font_size (term_view, 16));
++          grub_snprintf (font_name, sizeof (font_name),
++                         split ? "Caelestia Mono Regular %d" : "Caelestia Regular %d",
++                         grub_gfxmenu_font_size (term_view, split ? 14 : 16));
 +          font = grub_font_get (font_name);
 +          grub_font_draw_string ("Tab  Complete     Esc  Return", font,
-+                                grub_video_map_rgb (153, 143, 170), header.x,
-+                                term_view->screen.height * 94 / 100);
++                                split
++                                  ? grub_video_map_rgb (118, 126, 142)
++                                  : grub_video_map_rgb (153, 143, 170),
++                                header.x,
++                                term_view->screen.height * 93 / 100);
 +        }
 +      grub_errno = GRUB_ERR_NONE;
 +      return;
 +    }
- 
++
    term_box->set_content_size (term_box, term_view->terminal_rect.width,
  			      term_view->terminal_rect.height);
-@@ -437,9 +597,11 @@
+ 
+@@ -437,9 +882,11 @@
  {
    struct grub_font_glyph *glyph;
    glyph = grub_font_get_glyph (terminal_font, 'M');
@@ -331,7 +693,7 @@
                           + 2 * border_width;
  }
  
-@@ -524,6 +686,14 @@
+@@ -524,6 +971,14 @@
  {
    grub_font_t terminal_font;
  
@@ -346,7 +708,7 @@
    terminal_font = grub_font_get (view->terminal_font_name);
    if (!terminal_font)
      {
-@@ -531,10 +701,17 @@
+@@ -531,10 +986,17 @@
        return;
      }
  
@@ -365,7 +727,7 @@
  
    /* Note: currently there is no API for changing the gfxterm font
       on the fly, so whatever font the initially loaded theme specifies
-@@ -587,69 +764,15 @@
+@@ -587,69 +1049,37 @@
  
  }
  
@@ -378,10 +740,11 @@
 -static void
 -set_progress_message (grub_gfxmenu_view_t view, const char *message)
 +/* Keep the styled graphical terminal active for loading output and errors.
-+   No delay, input consumption, boot command changes or hidden diagnostics. */
++   No input consumption, boot command changes or hidden diagnostics. */
 +void
-+grub_gfxmenu_view_boot (grub_gfxmenu_view_t view, const char *title)
++grub_gfxmenu_view_boot (grub_gfxmenu_view_t view, grub_menu_entry_t entry)
  {
++  const char *motion = grub_env_get ("caelestia_motion");
    grub_free (view->progress_message_text);
 -  if (message)
 -    view->progress_message_text = grub_strdup (message);
@@ -428,7 +791,33 @@
 -static void
 -notify_execution_failure (void *userdata __attribute__ ((unused)))
 -{
--}
++  view->progress_message_text = entry && entry->title ? grub_strdup (entry->title) : 0;
++  if (!view->progress_message_text)
++    grub_errno = GRUB_ERR_NONE;
++  grub_gfxmenu_entry_screen_accent (entry, view->boot_accent);
++  view->boot_line_fp = 1024;
++  if (is_split_layout () && term_view == view
++      && (!motion || grub_strcmp (motion, "0") != 0))
++    {
++      grub_uint64_t start = grub_get_time_ms ();
++      int t;
++      do
++        {
++          int inv;
++          t = grub_min (1024, (int) ((grub_get_time_ms () - start) * 1024 / 180));
++          inv = 1024 - t;
++          view->boot_line_fp = 1024 - inv * inv / 1024 * inv / 1024;
++          grub_gfxmenu_draw_terminal_box ();
++          grub_video_swap_buffers ();
++          if (t < 1024)
++            grub_millisleep (8);
++        }
++      while (t < 1024);
++      view->boot_line_fp = 1024;
++    }
++  grub_gfxterm_schedule_repaint ();
++  grub_cls ();
+ }
 -
 -
 -static struct grub_menu_execute_callback execute_callback =
@@ -439,19 +828,12 @@
 -};
 -
 -#endif
-+  view->progress_message_text = grub_strdup (title);
-+  if (!view->progress_message_text)
-+    grub_errno = GRUB_ERR_NONE;
-+  grub_gfxterm_schedule_repaint ();
-+  grub_cls ();
-+}
 --- a/grub-core/gfxmenu/gfxmenu.c
 +++ b/grub-core/gfxmenu/gfxmenu.c
-@@ -41,6 +41,24 @@
- GRUB_MOD_LICENSE ("GPLv3+");
+@@ -42,6 +42,24 @@
  
  static grub_gfxmenu_view_t cached_view;
-+
+ 
 +static int
 +caelestia_boot (grub_menu_entry_t entry)
 +{
@@ -464,15 +846,35 @@
 +  FOR_ACTIVE_TERM_OUTPUTS (output)
 +    if (grub_strcmp (output->name, "gfxterm") == 0)
 +      {
-+        grub_gfxmenu_view_boot (cached_view, entry->title);
++        grub_gfxmenu_view_boot (cached_view, entry);
 +        return 1;
 +      }
 +  return 0;
 +}
- 
++
  static void
  grub_gfxmenu_viewer_fini (void *data __attribute__ ((unused)))
-@@ -117,6 +135,7 @@
+ {
+@@ -105,6 +123,18 @@
+ 			  & GRUB_VIDEO_MODE_TYPE_DOUBLE_BUFFERED)
+     && !(mode_info.mode_type & GRUB_VIDEO_MODE_TYPE_UPDATING_SWAP);
+   view->selected = entry;
++  view->split_pos = entry * 1024;
++  view->split_vel = 0;
++  view->split_color_init = 0;
++  {
++    const char *motion = grub_env_get ("caelestia_motion");
++    view->split_scramble_fp = (motion && grub_strcmp (motion, "0") == 0) ? 1024 : 0;
++  }
++  view->split_ripple_active = 0;
++  view->split_last_tick = grub_get_time_ms ();
++  view->boot_line_fp = 1024;
++  view->timeout_active = 0;
++  view->timeout_remaining = 0;
+   view->menu = menu;
+   view->nested = nested;
+   view->first_timeout = -1;
+@@ -117,12 +147,14 @@
      }
  
    grub_gfxmenu_view_draw (view);
@@ -480,7 +882,14 @@
  
    instance->data = view;
    instance->set_chosen_entry = grub_gfxmenu_set_chosen_entry;
-@@ -147,4 +166,5 @@
+   instance->fini = grub_gfxmenu_viewer_fini;
+   instance->print_timeout = grub_gfxmenu_print_timeout;
+   instance->clear_timeout = grub_gfxmenu_clear_timeout;
++  instance->tick = grub_gfxmenu_tick;
+ 
+   grub_menu_register_viewer (instance);
+ 
+@@ -147,4 +179,5 @@
  {
    grub_gfxmenu_view_destroy (cached_view);
    grub_gfxmenu_try_hook = NULL;
@@ -523,7 +932,23 @@
      }
    if (oldchosen)
      grub_env_set ("chosen", oldchosen);
-@@ -678,7 +693,7 @@
+@@ -458,6 +473,15 @@
+     cur->clear_timeout (cur->data);
+ }
+ 
++static void
++menu_tick (void)
++{
++  struct grub_menu_viewer *cur;
++  for (cur = viewers; cur; cur = cur->next)
++    if (cur->tick)
++      cur->tick (cur->data);
++}
++
+ void
+ grub_menu_register_viewer (struct grub_menu_viewer *viewer)
+ {
+@@ -678,7 +702,7 @@
  
    while (1)
      {
@@ -532,11 +957,10 @@
        timeout = grub_menu_get_timeout ();
  
        if (grub_normal_exit_level)
-@@ -700,6 +715,23 @@
- 	}
+@@ -701,6 +725,23 @@
  
        c = grub_getkey_noblock ();
-+
+ 
 +      {
 +        const char *carousel = grub_env_get ("caelestia_carousel");
 +        const char *active_theme = grub_env_get ("theme");
@@ -553,14 +977,14 @@
 +            else if (c == GRUB_TERM_KEY_RIGHT) c = GRUB_TERM_KEY_DOWN;
 +          }
 +      }
- 
++
        /* Negative values are returned on error. */
        if ((c != GRUB_TERM_NO_KEY) && (c > 0))
-@@ -710,6 +742,15 @@
- 	      grub_env_unset ("fallback");
+ 	{
+@@ -711,6 +752,15 @@
  	      clear_timeout ();
  	    }
-+
+ 
 +          if (themed && (c == 't' || c == 'T'))
 +            {
 +              /* Refresh the viewer without rebuilding the menu or changing its
@@ -569,10 +993,20 @@
 +              grub_script_execute_sourcecode ("caelestia_switch_theme");
 +              goto refresh;
 +            }
- 
++
  	  switch (c)
  	    {
-@@ -817,6 +858,9 @@
+ 	    case GRUB_TERM_KEY_HOME:
+@@ -806,6 +856,8 @@
+ 	      break;
+ 	    }
+ 	}
++      else
++	menu_tick ();
+     }
+ 
+   /* Never reach here.  */
+@@ -817,6 +869,9 @@
  {
    int *notify_boot = userdata;
  
@@ -582,7 +1016,7 @@
    if (*notify_boot)
      {
        grub_printf ("  ");
-@@ -885,7 +929,8 @@
+@@ -885,7 +940,8 @@
  					 &execution_callback, &notify_boot);
        else
  	{
@@ -710,11 +1144,24 @@
  	  /* Try to initialize adapter, if it fails, skip to next adapter.  */
 --- /dev/null
 +++ b/grub-core/gfxmenu/carousel.inc
-@@ -0,0 +1,257 @@
+@@ -0,0 +1,1076 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later
 + * Included by gui_list.c. Software-rendered carousel, bounded bitmap cache.
 + * No floating point, filesystem writes, menu model changes or boot commands.
 + */
++static void
++split_clear (list_impl_t self)
++{
++  grub_video_bitmap_destroy (self->split_cache.backdrop);
++  grub_video_bitmap_destroy (self->split_cache.corner_tl);
++  grub_video_bitmap_destroy (self->split_cache.corner_bl);
++  grub_video_bitmap_destroy (self->split_cache.corner_tr);
++  grub_video_bitmap_destroy (self->split_cache.corner_br);
++  grub_video_bitmap_destroy (self->split_cache.fillet_top);
++  grub_video_bitmap_destroy (self->split_cache.fillet_bot);
++  grub_memset (&self->split_cache, 0, sizeof (self->split_cache));
++}
++
 +static void
 +carousel_clear (list_impl_t self)
 +{
@@ -728,6 +1175,7 @@
 +        }
 +      self->carousel_cache[i].entry = 0;
 +    }
++  split_clear (self);
 +}
 +
 +static struct grub_video_bitmap *
@@ -966,6 +1414,811 @@
 +  grub_snprintf (counter, sizeof (counter), "%d / %d", view->selected + 1, view->menu->size);
 +  cards_draw_text (small, counter, ink, pad,
 +                   h * 93 / 100 + grub_font_get_ascent (small), row_width);
++  grub_gui_restore_viewport (&saved);
++}
++
++/* Pure-code dark/light monolith split theme. Zero external images: procedural
++   dot-matrix backdrop, 4x4 supersampled anti-aliased bridge corners/fillets,
++   7x7 dot-matrix OS glyphs, and non-blocking fixed-point spring animation. */
++static const grub_uint8_t split_glyph_arch[7]     = { 0x08, 0x1c, 0x14, 0x36, 0x22, 0x6b, 0x41 };
++static const grub_uint8_t split_glyph_cachyos[7]  = { 0x1e, 0x31, 0x60, 0x62, 0x60, 0x31, 0x1e };
++static const grub_uint8_t split_glyph_windows[7]  = { 0x77, 0x77, 0x77, 0x00, 0x77, 0x77, 0x77 };
++static const grub_uint8_t split_glyph_ubuntu[7]   = { 0x08, 0x36, 0x41, 0x41, 0x22, 0x5d, 0x00 };
++static const grub_uint8_t split_glyph_recovery[7] = { 0x00, 0x7f, 0x00, 0x7c, 0x00, 0x70, 0x00 };
++static const grub_uint8_t split_glyph_uefi[7]     = { 0x2a, 0x7f, 0x41, 0x49, 0x41, 0x7f, 0x2a };
++static const grub_uint8_t split_glyph_linux[7]    = { 0x08, 0x1c, 0x36, 0x6b, 0x36, 0x1c, 0x08 };
++
++static grub_font_t
++menu_get_mono_font (grub_gfxmenu_view_t view, int base)
++{
++  char name[48];
++  grub_snprintf (name, sizeof (name), "Caelestia Mono Regular %d",
++                 grub_min (96, grub_gfxmenu_font_size (view, base)));
++  return grub_font_get (name);
++}
++
++static const grub_uint8_t *
++split_entry_glyph (grub_menu_entry_t entry)
++{
++  struct grub_menu_entry_class *c;
++  if (entry)
++    for (c = entry->classes; c; c = c->next)
++      {
++        if (!c->name)
++          continue;
++        if (!grub_strcmp (c->name, "arch") || !grub_strcmp (c->name, "archlinux")
++            || !grub_strcmp (c->name, "arch-linux") || !grub_strcmp (c->name, "artix")
++            || !grub_strcmp (c->name, "endeavouros"))
++          return split_glyph_arch;
++        if (!grub_strcmp (c->name, "cachyos"))
++          return split_glyph_cachyos;
++        if (!grub_strcmp (c->name, "windows") || !grub_strcmp (c->name, "win")
++            || !grub_strcmp (c->name, "windows10") || !grub_strcmp (c->name, "windows11"))
++          return split_glyph_windows;
++        if (!grub_strcmp (c->name, "ubuntu") || !grub_strcmp (c->name, "kubuntu")
++            || !grub_strcmp (c->name, "xubuntu") || !grub_strcmp (c->name, "lubuntu")
++            || !grub_strcmp (c->name, "ubuntu-mate") || !grub_strcmp (c->name, "debian")
++            || !grub_strcmp (c->name, "pop") || !grub_strcmp (c->name, "popos")
++            || !grub_strcmp (c->name, "pop-os"))
++          return split_glyph_ubuntu;
++        if (!grub_strcmp (c->name, "recovery") || !grub_strcmp (c->name, "memtest"))
++          return split_glyph_recovery;
++        if (!grub_strcmp (c->name, "uefi") || !grub_strcmp (c->name, "efi")
++            || !grub_strcmp (c->name, "firmware"))
++          return split_glyph_uefi;
++      }
++  if (entry && entry->submenu)
++    return split_glyph_recovery;
++  return split_glyph_linux;
++}
++
++static const char *
++split_entry_tag (grub_menu_entry_t entry)
++{
++  struct grub_menu_entry_class *c;
++  if (entry && entry->submenu)
++    return "SUBMENU";
++  if (entry)
++    for (c = entry->classes; c; c = c->next)
++      {
++        if (!c->name)
++          continue;
++        if (!grub_strcmp (c->name, "arch") || !grub_strcmp (c->name, "archlinux")
++            || !grub_strcmp (c->name, "arch-linux"))
++          return "ARCH";
++        if (!grub_strcmp (c->name, "cachyos"))
++          return "CACHYOS";
++        if (!grub_strcmp (c->name, "windows") || !grub_strcmp (c->name, "win")
++            || !grub_strcmp (c->name, "windows10") || !grub_strcmp (c->name, "windows11"))
++          return "WINDOWS";
++        if (!grub_strcmp (c->name, "ubuntu"))
++          return "UBUNTU";
++        if (!grub_strcmp (c->name, "fedora"))
++          return "FEDORA";
++        if (!grub_strcmp (c->name, "debian"))
++          return "DEBIAN";
++        if (!grub_strcmp (c->name, "nixos"))
++          return "NIXOS";
++        if (!grub_strcmp (c->name, "uefi") || !grub_strcmp (c->name, "efi")
++            || !grub_strcmp (c->name, "firmware"))
++          return "FIRMWARE";
++        if (!grub_strcmp (c->name, "recovery") || !grub_strcmp (c->name, "memtest"))
++          return "RECOVERY";
++      }
++  return "SYSTEM";
++}
++
++static void
++split_parse_title (const char *src, char *primary, grub_size_t psize,
++                   char *detail, grub_size_t dsize)
++{
++  const char *open = grub_strstr (src, " (");
++  grub_size_t len = grub_strlen (src);
++  if (open && open > src && len > 3 && src[len - 1] == ')')
++    {
++      grub_size_t plen = (grub_size_t) (open - src);
++      grub_size_t dlen = len - plen - 3;
++      if (plen >= psize) plen = psize - 1;
++      if (dlen >= dsize) dlen = dsize - 1;
++      grub_memcpy (primary, src, plen);
++      primary[plen] = 0;
++      grub_memcpy (detail, open + 2, dlen);
++      detail[dlen] = 0;
++      return;
++    }
++  if (len >= psize) len = psize - 1;
++  grub_memcpy (primary, src, len);
++  primary[len] = 0;
++  if (dsize)
++    detail[0] = 0;
++}
++
++/* Type 0..3: convex rounded corners (TL, BL, TR, BR).
++   Type 4..5: concave seam fillets curving out of the right light monolith. */
++static struct grub_video_bitmap *
++split_make_corner (int size, int type)
++{
++  struct grub_video_bitmap *bmp = 0;
++  grub_uint8_t *data;
++  int px, py, sx, sy;
++  int r8 = size * 8;
++  int r2 = r8 * r8;
++  int cx = (type == 0 || type == 1) ? r8 : 0;
++  int cy = (type == 0 || type == 2 || type == 5) ? r8 : 0;
++  int concave = type >= 4;
++
++  if (size <= 0)
++    return 0;
++  if (grub_video_bitmap_create (&bmp, size, size, GRUB_VIDEO_BLIT_FORMAT_RGBA_8888))
++    {
++      grub_errno = GRUB_ERR_NONE;
++      return 0;
++    }
++  data = (grub_uint8_t *) bmp->data;
++  for (py = 0; py < size; py++)
++    for (px = 0; px < size; px++)
++      {
++        int hits = 0;
++        int idx = (py * size + px) * 4;
++        for (sy = 0; sy < 4; sy++)
++          for (sx = 0; sx < 4; sx++)
++            {
++              int dx = px * 8 + sx * 2 + 1 - cx;
++              int dy = py * 8 + sy * 2 + 1 - cy;
++              int inside = dx * dx + dy * dy <= r2;
++              if (concave ? !inside : inside)
++                hits++;
++            }
++        data[idx + 0] = 240;
++        data[idx + 1] = 237;
++        data[idx + 2] = 230;
++        data[idx + 3] = (grub_uint8_t) (hits * 255 / 16);
++      }
++  return bmp;
++}
++
++static void
++split_ensure_cache (list_impl_t self, int w, int h, int radius, int fillet, int spacing)
++{
++  int portrait = w < h;
++  int split_x = portrait ? 0 : w * 54 / 100;
++  int split_y = portrait ? h * 54 / 100 : 0;
++  struct grub_video_bitmap *bg = 0;
++
++  if (self->split_cache.width == w && self->split_cache.height == h
++      && self->split_cache.radius == radius && self->split_cache.fillet == fillet)
++    return;
++
++  split_clear (self);
++  self->split_cache.width = w;
++  self->split_cache.height = h;
++  self->split_cache.radius = radius;
++  self->split_cache.fillet = fillet;
++
++  self->split_cache.corner_tl = split_make_corner (radius, 0);
++  self->split_cache.corner_bl = split_make_corner (radius, 1);
++  self->split_cache.corner_tr = split_make_corner (radius, 2);
++  self->split_cache.corner_br = split_make_corner (radius, 3);
++  self->split_cache.fillet_top = split_make_corner (fillet, 4);
++  self->split_cache.fillet_bot = split_make_corner (fillet, 5);
++
++  if (grub_video_bitmap_create (&bg, w, h, GRUB_VIDEO_BLIT_FORMAT_RGB_888) == GRUB_ERR_NONE && bg)
++    {
++      grub_uint8_t *data = (grub_uint8_t *) bg->data;
++      int pitch = bg->mode_info.pitch;
++      int x, y;
++      for (y = 0; y < h; y++)
++        {
++          grub_uint8_t *row = data + y * pitch;
++          for (x = 0; x < w; x++)
++            {
++              int light = portrait ? (y >= split_y) : (x >= split_x);
++              row[x * 3 + 0] = light ? 240 : 13;
++              row[x * 3 + 1] = light ? 237 : 15;
++              row[x * 3 + 2] = light ? 230 : 20;
++            }
++        }
++      for (y = spacing; y < h - 1; y += spacing)
++        for (x = spacing; x < w - 1; x += spacing)
++          {
++            int light = portrait ? (y >= split_y) : (x >= split_x);
++            grub_uint8_t r = light ? 216 : 26;
++            grub_uint8_t g = light ? 212 : 30;
++            grub_uint8_t b = light ? 204 : 40;
++            int dy, dx;
++            for (dy = 0; dy < 2; dy++)
++              for (dx = 0; dx < 2; dx++)
++                {
++                  grub_uint8_t *p = data + (y + dy) * pitch + (x + dx) * 3;
++                  p[0] = r; p[1] = g; p[2] = b;
++                }
++          }
++      self->split_cache.backdrop = bg;
++    }
++  else
++    grub_errno = GRUB_ERR_NONE;
++}
++
++static void
++split_draw_dot_glyph (const grub_uint8_t *rows, int cx, int cy, int size,
++                      grub_video_color_t on, grub_video_color_t off)
++{
++  int step = grub_max (2, size / 7);
++  int dot = step >= 3 ? grub_max (2, step * 72 / 100) : 1;
++  int total = step * 7;
++  int ox = cx - total / 2 + (step - dot) / 2;
++  int oy = cy - total / 2 + (step - dot) / 2;
++  int x, y;
++  for (y = 0; y < 7; y++)
++    for (x = 0; x < 7; x++)
++      {
++        int active = (rows[y] >> (6 - x)) & 1;
++        grub_video_fill_rect (active ? on : off, ox + x * step, oy + y * step, dot, dot);
++      }
++}
++
++static void
++split_draw_brackets (int x, int y, int w, int h, int len, int thick,
++                     grub_video_color_t color)
++{
++  grub_video_fill_rect (color, x, y, len, thick);
++  grub_video_fill_rect (color, x, y, thick, len);
++  grub_video_fill_rect (color, x + w - len, y, len, thick);
++  grub_video_fill_rect (color, x + w - thick, y, thick, len);
++  grub_video_fill_rect (color, x, y + h - thick, len, thick);
++  grub_video_fill_rect (color, x, y + h - len, thick, len);
++  grub_video_fill_rect (color, x + w - len, y + h - thick, len, thick);
++  grub_video_fill_rect (color, x + w - thick, y + h - len, thick, len);
++}
++
++static void
++split_draw_bridge (list_impl_t self, int x, int y, int bw, int bh,
++                   int portrait, int split_x, grub_video_color_t paper,
++                   grub_video_color_t accent)
++{
++  int r = self->split_cache.radius;
++  int fr = self->split_cache.fillet;
++  int bar_h = grub_max (8, bh - 18);
++
++  if (portrait)
++    {
++      grub_video_fill_rect (paper, x + r, y, bw - r * 2, bh);
++      grub_video_fill_rect (paper, x, y + r, r, bh - r * 2);
++      grub_video_fill_rect (paper, x + bw - r, y + r, r, bh - r * 2);
++      if (self->split_cache.corner_tl)
++        grub_video_blit_bitmap (self->split_cache.corner_tl, GRUB_VIDEO_BLIT_BLEND,
++                                x, y, 0, 0, r, r);
++      if (self->split_cache.corner_bl)
++        grub_video_blit_bitmap (self->split_cache.corner_bl, GRUB_VIDEO_BLIT_BLEND,
++                                x, y + bh - r, 0, 0, r, r);
++      if (self->split_cache.corner_tr)
++        grub_video_blit_bitmap (self->split_cache.corner_tr, GRUB_VIDEO_BLIT_BLEND,
++                                x + bw - r, y, 0, 0, r, r);
++      if (self->split_cache.corner_br)
++        grub_video_blit_bitmap (self->split_cache.corner_br, GRUB_VIDEO_BLIT_BLEND,
++                                x + bw - r, y + bh - r, 0, 0, r, r);
++    }
++  else
++    {
++      /* Flush against split_x on the right with sculpted concave fillets. */
++      grub_video_fill_rect (paper, x + r, y, split_x - (x + r), bh);
++      grub_video_fill_rect (paper, x, y + r, r, bh - r * 2);
++      if (self->split_cache.corner_tl)
++        grub_video_blit_bitmap (self->split_cache.corner_tl, GRUB_VIDEO_BLIT_BLEND,
++                                x, y, 0, 0, r, r);
++      if (self->split_cache.corner_bl)
++        grub_video_blit_bitmap (self->split_cache.corner_bl, GRUB_VIDEO_BLIT_BLEND,
++                                x, y + bh - r, 0, 0, r, r);
++      if (self->split_cache.fillet_top && y - fr >= 0)
++        grub_video_blit_bitmap (self->split_cache.fillet_top, GRUB_VIDEO_BLIT_BLEND,
++                                split_x - fr, y - fr, 0, 0, fr, fr);
++      if (self->split_cache.fillet_bot && y + bh + fr <= (int) self->bounds.height)
++        grub_video_blit_bitmap (self->split_cache.fillet_bot, GRUB_VIDEO_BLIT_BLEND,
++                                split_x - fr, y + bh, 0, 0, fr, fr);
++    }
++  grub_video_fill_rect (accent, x + 5, y + (bh - bar_h) / 2, 4, bar_h);
++}
++
++static void
++split_draw_ripple (grub_gfxmenu_view_t view, int w, int h, int spacing,
++                   int portrait, int split_x, int split_y, int ox, int oy,
++                   const int accent[3])
++{
++  grub_uint64_t elapsed;
++  int max_r, rad, band, r_in2, r_out2, x0, x1, y0, y1, x, y;
++  int fade;
++
++  if (!view->split_ripple_active)
++    return;
++  elapsed = grub_get_time_ms () - view->split_ripple_start;
++  if (elapsed >= 420)
++    return;
++
++  max_r = (w + h) * 45 / 100;
++  rad = (int) (elapsed * (grub_uint64_t) max_r / 420);
++  band = spacing * 2;
++  fade = (int) ((420 - elapsed) * 255 / 420);
++  r_in2 = rad > band ? (rad - band) * (rad - band) : 0;
++  r_out2 = (rad + band) * (rad + band);
++
++  x0 = grub_max (spacing, ((ox - rad - band) / spacing) * spacing);
++  x1 = grub_min (w - 2, ox + rad + band);
++  y0 = grub_max (spacing, ((oy - rad - band) / spacing) * spacing);
++  y1 = grub_min (h - 2, oy + rad + band);
++
++  for (y = y0; y <= y1; y += spacing)
++    for (x = x0; x <= x1; x += spacing)
++      {
++        int dx = x - ox, dy = y - oy;
++        int d2 = dx * dx + dy * dy;
++        if (d2 >= r_in2 && d2 <= r_out2)
++          {
++            int light = portrait ? (y >= split_y) : (x >= split_x);
++            int br = light ? 216 : 26;
++            int bg = light ? 212 : 30;
++            int bb = light ? 204 : 40;
++            int mix = fade * 75 / 100;
++            grub_video_color_t c = grub_video_map_rgb (
++              (grub_uint8_t) (br + (accent[0] - br) * mix / 255),
++              (grub_uint8_t) (bg + (accent[1] - bg) * mix / 255),
++              (grub_uint8_t) (bb + (accent[2] - bb) * mix / 255));
++            grub_video_fill_rect (c, x, y, 2, 2);
++          }
++      }
++}
++
++static void
++split_draw_keys (grub_gfxmenu_view_t view, int cx, int y, int max_w,
++                 int light_bg, int nested)
++{
++  static const char *const keys_main[5] = { "\xe2\x86\x91\xe2\x86\x93", "Enter", "E", "C", "T" };
++  static const char *const labs_main[5] = { "Choose", "Boot", "Edit", "Console", "Theme" };
++  static const char *const keys_sub[6]  = { "\xe2\x86\x91\xe2\x86\x93", "Enter", "Esc", "E", "C", "T" };
++  static const char *const labs_sub[6]  = { "Choose", "Boot", "Back", "Edit", "Console", "Theme" };
++  const char *const *keys = nested ? keys_sub : keys_main;
++  const char *const *labs = nested ? labs_sub : labs_main;
++  int count = nested ? 6 : 5;
++  grub_font_t font = menu_get_mono_font (view, 12);
++  int asc = grub_font_get_ascent (font);
++  int desc = grub_font_get_descent (font);
++  int kh = asc + desc + 8;
++  int pad = 7, gap_kl = 6, gap_g = 16;
++  int kw[6], lw[6], total = 0, show_labels = 1, i, x;
++  grub_video_color_t border = light_bg ? grub_video_map_rgb (186, 182, 174)
++                                       : grub_video_map_rgb (46, 52, 66);
++  grub_video_color_t key_fg = light_bg ? grub_video_map_rgb (28, 30, 38)
++                                       : grub_video_map_rgb (204, 212, 226);
++  grub_video_color_t lab_fg = light_bg ? grub_video_map_rgb (114, 112, 107)
++                                       : grub_video_map_rgb (104, 112, 128);
++
++  for (i = 0; i < count; i++)
++    {
++      kw[i] = grub_max (kh, grub_font_get_string_width (font, keys[i]) + pad * 2);
++      lw[i] = grub_font_get_string_width (font, labs[i]);
++      total += kw[i] + gap_kl + lw[i];
++    }
++  total += gap_g * (count - 1);
++  if (total > max_w)
++    {
++      show_labels = 0;
++      gap_g = 10;
++      total = 0;
++      for (i = 0; i < count; i++)
++        total += kw[i];
++      total += gap_g * (count - 1);
++      if (total > max_w)
++        return;
++    }
++
++  x = cx - total / 2;
++  for (i = 0; i < count; i++)
++    {
++      int ky = y - kh / 2;
++      int tw = grub_font_get_string_width (font, keys[i]);
++      int base = y + (asc - desc) / 2;
++      grub_video_fill_rect (border, x, ky, kw[i], 1);
++      grub_video_fill_rect (border, x, ky + kh - 1, kw[i], 1);
++      grub_video_fill_rect (border, x, ky, 1, kh);
++      grub_video_fill_rect (border, x + kw[i] - 1, ky, 1, kh);
++      grub_font_draw_string (keys[i], font, key_fg, x + (kw[i] - tw) / 2, base);
++      if (show_labels)
++        {
++          grub_font_draw_string (labs[i], font, lab_fg, x + kw[i] + gap_kl, base);
++          x += kw[i] + gap_kl + lw[i] + gap_g;
++        }
++      else
++        x += kw[i] + gap_g;
++    }
++}
++
++static const grub_int8_t split_sin64[64] = {
++    0,  12,  25,  37,  49,  60,  71,  81,  90,  98, 106, 112, 117, 122, 125, 127,
++  127, 127, 125, 122, 117, 112, 106,  98,  90,  81,  71,  60,  49,  37,  25,  12,
++    0, -12, -25, -37, -49, -60, -71, -81, -90, -98,-106,-112,-117,-122,-125,-127,
++ -127,-127,-125,-122,-117,-112,-106, -98, -90, -81, -71, -60, -49, -37, -25, -12
++};
++
++static void
++split_scramble_title (const char *src, char *out, grub_size_t size, int fp)
++{
++  static const char glyphs[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/_-:.";
++  grub_size_t len = grub_strlen (src);
++  grub_size_t i;
++  if (len >= size)
++    len = size - 1;
++  if (fp >= 1024 || len == 0)
++    {
++      grub_memcpy (out, src, len);
++      out[len] = 0;
++      return;
++    }
++  for (i = 0; i < len; i++)
++    {
++      unsigned char ch = (unsigned char) src[i];
++      int reveal = (int) (i * 736 / len);
++      /* Only scramble printable ASCII so UTF-8 sequences stay intact. */
++      if (ch < 33 || ch > 126 || fp >= reveal + 288)
++        out[i] = (char) ch;
++      else if (fp >= reveal)
++        out[i] = glyphs[(i * 19 + (unsigned) (fp / 24) * 7) % (sizeof (glyphs) - 1)];
++      else
++        out[i] = '_';
++    }
++  out[len] = 0;
++}
++
++static void
++split_draw_wave (grub_gfxmenu_view_t view, int x0, int wy, int lw,
++                 grub_video_color_t line_c, grub_video_color_t glow_c,
++                 grub_video_color_t base_c)
++{
++  const char *motion = grub_env_get ("caelestia_motion");
++  int animated = !motion || grub_strcmp (motion, "0") != 0;
++  int phase = animated ? (int) ((grub_get_time_ms () / 36) & 63) : 10;
++  int kick = grub_min (12, grub_abs (view->split_vel) / 450);
++  int amp = 5 + kick;
++  int step = grub_max (3, lw / 96);
++  int prev_y = wy;
++  int x;
++
++  grub_video_fill_rect (base_c, x0, wy, lw, 1);
++  for (x = 0; x <= lw; x += step)
++    {
++      int env = split_sin64[(x * 31 / grub_max (1, lw)) & 63];
++      int s1 = split_sin64[((x * 192 / grub_max (1, lw)) - phase) & 63];
++      int s2 = split_sin64[((x * 384 / grub_max (1, lw)) + phase * 2) & 63];
++      int y = wy + ((s1 * 2 + s2) * env / 128) * amp / 384;
++      if (x > 0)
++        {
++          int y0 = grub_min (prev_y, y);
++          int yh = grub_max (2, grub_abs (y - prev_y) + 1);
++          int sx = x0 + x - step;
++          grub_video_fill_rect (glow_c, sx, y0 + 1, step, yh);
++          grub_video_fill_rect (line_c, sx, y0, step, yh);
++        }
++      prev_y = y;
++    }
++}
++
++static void
++split_paint (list_impl_t self)
++{
++  grub_gfxmenu_view_t view = self->view;
++  int w = self->bounds.width, h = self->bounds.height;
++  int portrait = w < h;
++  int split_x = portrait ? 0 : w * 54 / 100;
++  int split_y = portrait ? h * 54 / 100 : 0;
++  int dark_w = portrait ? w : split_x;
++  int dark_h = portrait ? split_y : h;
++  int scale = grub_min (h * 1024 / 1080, w * 1024 / 1280);
++  int spacing = grub_max (16, grub_min (24, grub_min (w, h) / 34));
++  int radius = grub_max (6, grub_min (12, 10 * scale / 1024));
++  int fillet = grub_max (8, grub_min (14, 12 * scale / 1024));
++  int pad_x = grub_max (18, grub_min (60, w * 48 / 1000));
++  int top_y = grub_max (26, grub_min (68, h * 75 / 1000));
++  int accent[3];
++  grub_video_color_t c_dark = grub_video_map_rgb (13, 15, 20);
++  grub_video_color_t c_paper = grub_video_map_rgb (240, 237, 230);
++  grub_video_color_t c_ink = grub_video_map_rgb (18, 20, 26);
++  grub_video_color_t c_ink_muted = grub_video_map_rgb (114, 112, 107);
++  grub_video_color_t c_dark_line = grub_video_map_rgb (34, 38, 48);
++  grub_video_color_t c_light_line = grub_video_map_rgb (212, 208, 200);
++  grub_video_color_t c_dark_muted = grub_video_map_rgb (110, 119, 136);
++  grub_video_color_t c_accent;
++  grub_font_t f_mono = menu_get_mono_font (view, 14);
++  grub_font_t f_row = menu_get_font (view, 22);
++  grub_menu_entry_t active;
++  grub_video_rect_t saved;
++  int visible, first, pos, i;
++  int list_top, list_bot, row_gap, row_h, total_h, start_y;
++  int bridge_y, bridge_h, bridge_mid;
++  char buf[32], primary[256], detail[256];
++
++  if (!view || !view->menu || view->menu->size <= 0)
++    return;
++
++  active = grub_menu_get_entry (view->menu, view->selected);
++  if (!active)
++    return;
++
++  if (view->split_color_init)
++    {
++      accent[0] = view->split_color[0] / 256;
++      accent[1] = view->split_color[1] / 256;
++      accent[2] = view->split_color[2] / 256;
++    }
++  else
++    {
++      grub_gfxmenu_entry_accent (active, accent);
++      view->split_color[0] = accent[0] * 256;
++      view->split_color[1] = accent[1] * 256;
++      view->split_color[2] = accent[2] * 256;
++      view->split_color_init = 1;
++    }
++  c_accent = grub_video_map_rgb ((grub_uint8_t) accent[0],
++                                 (grub_uint8_t) accent[1],
++                                 (grub_uint8_t) accent[2]);
++
++  split_ensure_cache (self, w, h, radius, fillet, spacing);
++  grub_gui_set_viewport (&self->bounds, &saved);
++
++  /* 1. Static dot-matrix monolith backdrop */
++  if (self->split_cache.backdrop)
++    grub_video_blit_bitmap (self->split_cache.backdrop, GRUB_VIDEO_BLIT_REPLACE,
++                            0, 0, 0, 0, w, h);
++  else if (portrait)
++    {
++      grub_video_fill_rect (c_dark, 0, 0, w, split_y);
++      grub_video_fill_rect (c_paper, 0, split_y, w, h - split_y);
++    }
++  else
++    {
++      grub_video_fill_rect (c_dark, 0, 0, split_x, h);
++      grub_video_fill_rect (c_paper, split_x, 0, w - split_x, h);
++    }
++
++  /* 2. Entry geometry on dark side */
++  visible = grub_min (portrait ? 4 : 6, view->menu->size);
++  pos = view->split_pos;
++  if (pos < 0) pos = 0;
++  if (pos > (view->menu->size - 1) * 1024) pos = (view->menu->size - 1) * 1024;
++  first = grub_max (0, grub_min ((pos + 512) / 1024 - visible / 2,
++                                 view->menu->size - visible));
++
++  list_top = top_y + 38;
++  list_bot = dark_h - (portrait ? 20 : 72);
++  row_gap = grub_max (6, grub_min (14, (list_bot - list_top) * 28 / 1000));
++  row_h = grub_max (38, grub_min (72, (list_bot - list_top - (visible - 1) * row_gap) / visible));
++  total_h = visible * row_h + (visible - 1) * row_gap;
++  start_y = list_top + grub_max (0, (list_bot - list_top - total_h) * 46 / 100);
++
++  {
++    int rel = pos - first * 1024;
++    int stretch = grub_min (9, grub_abs (view->split_vel) / 600);
++    if (rel < 0) rel = 0;
++    if (rel > (visible - 1) * 1024) rel = (visible - 1) * 1024;
++    bridge_y = start_y + rel * (row_h + row_gap) / 1024 - stretch / 2;
++    bridge_h = row_h + stretch;
++    if (bridge_y < list_top)
++      bridge_y = list_top;
++    if (bridge_y + bridge_h > list_bot)
++      bridge_h = list_bot - bridge_y;
++    bridge_mid = bridge_y + bridge_h / 2;
++  }
++
++  /* Optional expanding dot-matrix ripple from the seam */
++  split_draw_ripple (view, w, h, spacing, portrait, split_x, split_y,
++                     portrait ? w / 2 : split_x,
++                     portrait ? split_y : bridge_mid, accent);
++
++  /* 3. Dark side top header */
++  {
++    int asc = grub_font_get_ascent (f_mono);
++    int desc = grub_font_get_descent (f_mono);
++    int base = top_y + (asc - desc) / 2;
++    int right_x = dark_w - (portrait ? pad_x : 28);
++    int tw;
++    grub_video_fill_rect (c_accent, pad_x, top_y - 3, 6, 6);
++    grub_font_draw_string (view->nested ? "SUBMENU" : "BOOT", f_mono,
++                           grub_video_map_rgb (226, 232, 242), pad_x + 14, base);
++    grub_snprintf (buf, sizeof (buf), "%02d / %02d", view->selected + 1, view->menu->size);
++    tw = grub_font_get_string_width (f_mono, buf);
++    grub_font_draw_string (buf, f_mono, c_dark_muted, right_x - tw, base);
++    grub_video_fill_rect (c_dark_line, pad_x, top_y + 18, right_x - pad_x, 1);
++  }
++
++  /* 4. Subtle dark slot frames (unselected rows) + seamless light bridge */
++  {
++    int slot_w = portrait ? (w - pad_x * 2) : (split_x - pad_x - 24);
++    grub_video_color_t slot_border = grub_video_map_rgb (26, 30, 40);
++    for (i = 0; i < visible; i++)
++      {
++        int ry = start_y + i * (row_h + row_gap);
++        grub_video_fill_rect (slot_border, pad_x, ry, slot_w, 1);
++        grub_video_fill_rect (slot_border, pad_x, ry + row_h - 1, slot_w, 1);
++        grub_video_fill_rect (slot_border, pad_x, ry, 1, row_h);
++        grub_video_fill_rect (slot_border, pad_x + slot_w - 1, ry, 1, row_h);
++      }
++  }
++  split_draw_bridge (self, pad_x, bridge_y, w - pad_x * 2, bridge_h,
++                     portrait, split_x, c_paper, c_accent);
++
++  /* 5. Entry list */
++  {
++    int glyph_sz = grub_max (18, grub_min (28, row_h * 44 / 100));
++    int row_asc = grub_font_get_ascent (f_row);
++    int row_desc = grub_font_get_descent (f_row);
++    int mono_asc = grub_font_get_ascent (f_mono);
++    int mono_desc = grub_font_get_descent (f_mono);
++    int right_edge = (portrait ? w - pad_x : split_x - 24) - 12;
++
++    for (i = 0; i < visible; i++)
++      {
++        int idx = first + i;
++        int ry = start_y + i * (row_h + row_gap);
++        int mid = ry + row_h / 2;
++        int dist = grub_abs (idx * 1024 - pos);
++        int blend = dist < 640 ? (640 - dist) * 255 / 640 : 0;
++        grub_menu_entry_t entry = grub_menu_get_entry (view->menu, idx);
++        int tx = pad_x + 20;
++        int ink_v = 216 + (18 - 216) * blend / 255;
++        grub_video_color_t text_c = grub_video_map_rgb (
++          (grub_uint8_t) ink_v,
++          (grub_uint8_t) (ink_v + (blend > 128 ? 2 : 6)),
++          (grub_uint8_t) (ink_v + (blend > 128 ? 8 : 16)));
++        grub_video_color_t idx_c = blend > 128 ? c_accent : c_dark_muted;
++        grub_video_color_t dot_on = blend > 128 ? c_ink : grub_video_map_rgb (184, 192, 208);
++        grub_video_color_t dot_off = blend > 128 ? grub_video_map_rgb (218, 214, 206)
++                                                 : grub_video_map_rgb (26, 30, 40);
++        if (!entry)
++          continue;
++
++        grub_snprintf (buf, sizeof (buf), "%02d", idx + 1);
++        grub_font_draw_string (buf, f_mono, idx_c, tx, mid + (mono_asc - mono_desc) / 2);
++        tx += grub_font_get_string_width (f_mono, "00") + 16;
++
++        split_draw_dot_glyph (split_entry_glyph (entry), tx + glyph_sz / 2, mid,
++                              glyph_sz, dot_on, dot_off);
++        tx += glyph_sz + 16;
++
++        split_parse_title (entry->title, primary, sizeof (primary), detail, sizeof (detail));
++        if (right_edge > tx + 24)
++          cards_draw_text (f_row, primary, text_c, tx, mid + (row_asc - row_desc) / 2,
++                           right_edge - tx);
++      }
++  }
++
++  if (!portrait)
++    split_draw_keys (view, split_x / 2, h - 34, split_x - 24, 0, view->nested);
++
++  /* 6. Light side — clean target view with prototype animations */
++  {
++    int lx = portrait ? pad_x : split_x + grub_max (24, (w - split_x) * 10 / 100);
++    int lw = portrait ? (w - pad_x * 2) : (w - split_x - grub_max (48, (w - split_x) * 20 / 100));
++    int ltop = portrait ? (split_y + 24) : top_y;
++    int lbot = portrait ? (h - 56) : (h - 34);
++    int asc = grub_font_get_ascent (f_mono);
++    int desc = grub_font_get_descent (f_mono);
++    int hbase = ltop + (asc - desc) / 2;
++    const char *tag = split_entry_tag (active);
++    int tw, inv, ease_fp;
++    int box, hero_y, hero_h, rule_y, rule_w, wave_y, gauge_y, footer_top;
++    grub_font_t f_hero;
++    const char *sub;
++    char revealed[256];
++
++    /* Aligned top horizon bar — single clean OS class tag */
++    grub_font_draw_string (tag, f_mono, c_ink_muted, lx, hbase);
++    grub_video_fill_rect (c_light_line, lx, ltop + 18, lw, 1);
++
++    /* Bottom anchor coordinates (segmented bar + live oscilloscope wave) */
++    wave_y = lbot - 2;
++    gauge_y = wave_y - 24;
++    footer_top = gauge_y - (asc + desc + 14);
++
++    /* Hero block: bracketed dot emblem + scramble-reveal title + expanding rule */
++    split_parse_title (active->title, primary, sizeof (primary), detail, sizeof (detail));
++    sub = detail[0] ? detail : (active->submenu ? "Submenu" : 0);
++
++    {
++      static const int candidates[5] = { 64, 48, 40, 32, 24 };
++      int ci;
++      f_hero = menu_get_font (view, 24);
++      for (ci = 0; ci < 5; ci++)
++        {
++          grub_font_t try_f = menu_get_font (view, candidates[ci]);
++          if (try_f && grub_font_get_string_width (try_f, primary) <= lw)
++            {
++              f_hero = try_f;
++              break;
++            }
++        }
++    }
++
++    box = (portrait && (footer_top - ltop) < 250) ? 0
++          : grub_max (48, grub_min (80, grub_min (lw * 20 / 100, h * 11 / 100)));
++    hero_h = (box ? box + 28 : 0)
++           + grub_font_get_ascent (f_hero) + grub_font_get_descent (f_hero)
++           + (sub ? (asc + desc + 12) : 0) + 22;
++    hero_y = ltop + 28 + grub_max (0, (footer_top - (ltop + 28) - hero_h) * 44 / 100);
++
++    if (box > 0)
++      {
++        grub_video_fill_rect (grub_video_map_rgb (232, 228, 220), lx, hero_y, box, box);
++        split_draw_brackets (lx, hero_y, box, box, grub_max (8, box / 6), 2, c_ink);
++        split_draw_dot_glyph (split_entry_glyph (active), lx + box / 2, hero_y + box / 2,
++                              box * 60 / 100, c_ink, grub_video_map_rgb (212, 208, 200));
++        hero_y += box + 28;
++      }
++
++    split_scramble_title (primary, revealed, sizeof (revealed), view->split_scramble_fp);
++    cards_draw_text (f_hero, revealed, c_ink, lx, hero_y + grub_font_get_ascent (f_hero), lw);
++    hero_y += grub_font_get_ascent (f_hero) + grub_font_get_descent (f_hero);
++
++    if (sub)
++      {
++        hero_y += 10;
++        cards_draw_text (f_mono, sub, c_accent, lx, hero_y + asc, lw);
++        hero_y += asc + desc;
++      }
++
++    inv = 1024 - grub_max (0, grub_min (1024, view->split_scramble_fp));
++    ease_fp = 1024 - inv * inv / 1024 * inv / 1024;
++    rule_y = hero_y + 18;
++    rule_w = lw * (350 + 650 * ease_fp / 1024) / 1000;
++    grub_video_fill_rect (c_ink, lx, rule_y, rule_w, 2);
++    if (rule_w < lw)
++      grub_video_fill_rect (c_light_line, lx + rule_w, rule_y + 1, lw - rule_w, 1);
++
++    /* Bottom segmented countdown track + live oscilloscope waveform */
++    {
++      int blocks = 24, b_gap = 3;
++      int bw = grub_max (2, (lw - (blocks - 1) * b_gap) / blocks);
++      int bar_w = blocks * bw + (blocks - 1) * b_gap;
++      int filled_fp = 0, bi;
++
++      if (view->timeout_active && view->first_timeout > 0)
++        {
++          int total_ms = view->first_timeout * 1000;
++          int rem_ms = view->timeout_remaining * 1000;
++          const char *motion = grub_env_get ("caelestia_motion");
++          if (!motion || grub_strcmp (motion, "0") != 0)
++            {
++              int since = (int) grub_min ((grub_uint64_t) 980,
++                                          grub_get_time_ms () - view->timeout_mark_ms);
++              rem_ms = grub_max (0, rem_ms - since);
++            }
++          filled_fp = rem_ms * blocks * 256 / total_ms;
++          grub_snprintf (buf, sizeof (buf), "%ds", view->timeout_remaining);
++          tw = grub_font_get_string_width (f_mono, buf);
++          grub_font_draw_string (buf, f_mono, c_accent, lx + bar_w - tw, gauge_y - 8);
++        }
++
++      for (bi = 0; bi < blocks; bi++)
++        {
++          int frac = filled_fp - bi * 256;
++          grub_video_color_t bc;
++          if (frac >= 256)
++            bc = c_ink;
++          else if (frac > 0)
++            bc = c_accent;
++          else
++            bc = grub_video_map_rgb (218, 214, 206);
++          grub_video_fill_rect (bc, lx + bi * (bw + b_gap), gauge_y, bw, 6);
++        }
++
++      split_draw_wave (view, lx, wave_y, bar_w, c_ink,
++                       grub_video_map_rgb (
++                         (grub_uint8_t) (240 + (accent[0] - 240) / 3),
++                         (grub_uint8_t) (237 + (accent[1] - 237) / 3),
++                         (grub_uint8_t) (230 + (accent[2] - 230) / 3)),
++                       c_light_line);
++    }
++
++    if (portrait)
++      split_draw_keys (view, w / 2, h - 24, w - 24, 1, view->nested);
++  }
++
 +  grub_gui_restore_viewport (&saved);
 +}
 --- a/grub-core/kern/efi/sb.c
@@ -1232,12 +2485,10 @@
  
 --- a/grub-core/kern/efi/efi.c
 +++ b/grub-core/kern/efi/efi.c
-@@ -492,6 +492,112 @@
- {
-   return grub_efi_open_protocol (handle, &device_path_guid,
+@@ -494,6 +494,112 @@
  				 GRUB_EFI_OPEN_PROTOCOL_GET_PROTOCOL);
-+}
-+
+ }
+ 
 +static grub_err_t
 +copy_file_path (grub_efi_file_path_device_path_t *fp,
 +		const char *str, grub_efi_uint16_t len)
@@ -1342,9 +2593,11 @@
 +  d->length = sizeof (*d);
 +
 +  return file_path;
- }
- 
++}
++
  /* Return the device path node right before the end node.  */
+ grub_efi_device_path_t *
+ grub_efi_find_last_device_path (const grub_efi_device_path_t *dp)
 --- a/include/grub/efi/efi.h
 +++ b/include/grub/efi/efi.h
 @@ -73,6 +73,10 @@

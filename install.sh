@@ -79,7 +79,7 @@ validate_resolution() {
 }
 
 validate_theme() {
-  [[ $theme != */* && -f "$project/theme/$theme/carousel.txt" ]] || die 'Use --theme starlight or frieren'
+  [[ $theme != */* && -f "$project/theme/$theme/carousel.txt" ]] || die 'Use --theme starlight, frieren or split'
 }
 
 load_installation_settings() {
@@ -184,7 +184,7 @@ update: rebuild an existing installation, reusing its paths and preferences.
   --esp DIR        EFI System Partition (otherwise detected)
   --config FILE    Existing grub.cfg (remembered after installation)
   --resolution WxH Preferred firmware resolution (auto allowed; remembered)
-  --theme NAME     Default theme: starlight or frieren (remembered; T switches live)
+  --theme NAME     Default theme: starlight, frieren or split (remembered; T switches live)
   --jobs COUNT     Parallel build jobs (default: JOBS or 8)
   --no-nvram       Install files without creating a firmware boot entry
   --nvram          Create a missing boot entry (override saved --no-nvram)
@@ -208,7 +208,7 @@ while (( $# )); do
     --esp) [[ $# -ge 2 ]] || die '--esp requires a directory'; esp=$2; shift 2 ;;
     --config) [[ $# -ge 2 ]] || die '--config requires a file'; config=$2; shift 2 ;;
     --resolution) [[ $# -ge 2 ]] || die '--resolution requires WIDTHxHEIGHT or auto'; resolution=$2; resolution_override=1; shift 2 ;;
-    --theme) [[ $# -ge 2 ]] || die '--theme requires starlight or frieren'; theme=$2; theme_override=1; shift 2 ;;
+    --theme) [[ $# -ge 2 ]] || die '--theme requires starlight, frieren or split'; theme=$2; theme_override=1; shift 2 ;;
     --jobs) [[ $# -ge 2 ]] || die '--jobs requires a positive integer'; jobs=$2; shift 2 ;;
     --no-nvram) nvram=0; nvram_override=1; shift ;;
     --nvram) nvram=1; nvram_override=1; shift ;;

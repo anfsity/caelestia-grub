@@ -75,7 +75,11 @@ class GrubVMTest(unittest.TestCase):
             im = self.capture()
             counts = im.resize((320, 180)).getcolors(320 * 180) or []
             if (
-                sum(n for n, c in counts if c[:3] in ((208, 188, 255), (215, 231, 242)))
+                sum(
+                    n
+                    for n, c in counts
+                    if c[:3] in ((208, 188, 255), (215, 231, 242), (240, 237, 230))
+                )
                 > 80
             ):
                 time.sleep(0.4)
@@ -207,6 +211,16 @@ class GrubVMTest(unittest.TestCase):
         counts = im.crop(box).getcolors(w * h) or []
         self.assertGreater(sum(n for n, c in counts if c[:3] == (215, 231, 242)), 1000)
 
+    def assert_split(self):
+        im = self.capture()
+        w, h = im.size
+        dark_box = (0, 0, w, int(h * 0.50)) if w < h else (0, 0, int(w * 0.50), h)
+        light_box = (0, int(h * 0.56), w, h) if w < h else (int(w * 0.56), 0, w, h)
+        dark = im.crop(dark_box).getcolors(w * h) or []
+        light = im.crop(light_box).getcolors(w * h) or []
+        self.assertGreater(sum(n for n, c in dark if c[:3] == (13, 15, 20)), 5000)
+        self.assertGreater(sum(n for n, c in light if c[:3] == (240, 237, 230)), 5000)
+
     def switch_theme(self, name, key="t"):
         self.q.key(key)
         deadline = time.monotonic() + 15
@@ -214,12 +228,16 @@ class GrubVMTest(unittest.TestCase):
             im = self.capture().resize((320, 180))
             counts = im.getcolors(320 * 180) or []
             cards = sum(n for n, c in counts if c[:3] == (215, 231, 242))
+            paper = sum(n for n, c in counts if c[:3] == (240, 237, 230))
+            dark = sum(n for n, c in counts if c[:3] == (13, 15, 20))
             carousel = sum(
                 n for n, c in counts if c[:3] in ((208, 188, 255), (255, 207, 181))
             )
             # The background can reach the framebuffer before its menu.
-            if (name == "frieren" and cards > 100) or (
-                name == "starlight" and cards == 0 and carousel > 80
+            if (
+                (name == "frieren" and cards > 100)
+                or (name == "split" and paper > 8000 and dark > 8000)
+                or (name == "starlight" and cards == 0 and paper < 1000 and carousel > 80)
             ):
                 return
             time.sleep(0.1)
@@ -238,7 +256,10 @@ class GrubVMTest(unittest.TestCase):
         self.q.type("echo THEME_CONSOLE_WORKS\n")
         self.key("esc")
         self.assert_cards()
-        self.switch_theme("starlight", "shift-t")
+        self.switch_theme("split", "shift-t")
+        self.assert_split()
+        self.capture().save(ROOT / "build/captures/split.png")
+        self.switch_theme("starlight")
         self.assert_center((255, 207, 181))
         self.switch_theme("frieren")
         self.boot_marker("ubuntu")
@@ -258,23 +279,55 @@ class GrubVMTest(unittest.TestCase):
         self.key("left")
         self.key("ret")
         self.assert_cards()
-        self.switch_theme("starlight")
-        self.assert_center((208, 188, 255))
+        self.switch_theme("split")
+        self.assert_split()
         self.key("esc")
-        self.assert_center((208, 188, 255))
+        self.assert_split()
         self.key("end")
         self.key("left")
         self.key("ret")
         self.key("down")
-        self.switch_theme("frieren")
-        self.assert_cards()
+        self.switch_theme("starlight")
+        self.assert_center((235, 214, 168))
         self.key("esc")
-        self.assert_cards()
+        self.assert_center((208, 188, 255))
         self.key("end")
         self.key("left")
         self.key("ret")
         self.key("down")
         self.boot_marker("diagnostic")
+
+    def test_split_resolutions_and_console(self):
+        for resolution in ("640x480", "1920x1080", "768x1024"):
+            with self.subTest(resolution=resolution):
+                try:
+                    self.start(
+                        "--theme",
+                        "split",
+                        "--resolution",
+                        resolution,
+                        "--native-resolution",
+                        resolution,
+                        "--many",
+                        "--reduced-motion",
+                    )
+                    self.assertEqual(
+                        self.capture().size, tuple(map(int, resolution.split("x")))
+                    )
+                    self.assert_split()
+                    self.capture().save(
+                        ROOT / f"build/captures/split-{resolution}.png"
+                    )
+                    self.key("e")
+                    self.key("esc")
+                    self.key("c")
+                    self.q.type("echo SPLIT_CONSOLE_WORKS\n")
+                    self.key("esc")
+                    self.assert_split()
+                    self.key("home")
+                    self.boot_marker("windows")
+                finally:
+                    self.stop()
 
     def test_frieren_resolutions_and_console(self):
         for resolution in ("640x480", "1920x1080", "768x1024"):

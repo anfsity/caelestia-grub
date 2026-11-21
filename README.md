@@ -8,16 +8,18 @@ A themeable GRUB boot menu inspired by [Caelestia](https://github.com/caelestia-
 
 ## Themes and preview
 
-Both themes are installed together. Press **T** in the boot menu to switch between them without changing the selected operating system. The choice also follows you into and out of submenus. A theme switch cancels the boot countdown, like other navigation keys.
+All themes are installed together. Press **T** in the boot menu to cycle between them without changing the selected operating system. The choice also follows you into and out of submenus. A theme switch cancels the boot countdown, like other navigation keys.
 
 - **Starlight**: a blue-violet starfield with a centred carousel.
 - **Frieren**: snowy artwork on the left and system cards on the right. Portrait displays move the cards below the character.
+- **Split**: a pure-code dark/light monolith split with zero images, procedural dot-matrix glyphs, a seamless sliding selection bridge, and non-blocking spring motion. Portrait displays stack dark above light.
 
 To try the actual GRUB interface without installing it, install QEMU, OVMF and a VNC viewer, then run from this directory:
 
 ```sh
-make run THEME=starlight
-# Or start directly in the other theme:
+make run THEME=split
+# Or start directly in another theme:
+# make run THEME=starlight
 # make run THEME=frieren
 ```
 
@@ -32,9 +34,9 @@ Use the arrow keys to navigate and **T** to compare themes. The preview uses dis
 To choose the persistent default for your installed bootloader:
 
 ```sh
-./install.sh install --theme starlight
+./install.sh install --theme split
 # For an existing installation:
-./install.sh update --theme frieren
+./install.sh update --theme split
 ```
 
 The default is saved for future updates. Pressing **T** changes the theme for the current boot session without writing to the boot filesystem.

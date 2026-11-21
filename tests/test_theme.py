@@ -64,15 +64,17 @@ class ThemeTest(unittest.TestCase):
 
 
 class ThemeCatalogTest(unittest.TestCase):
-    def test_both_themes_ship_with_layout_background_and_shared_assets(self):
+    def test_themes_ship_with_valid_layouts_and_assets(self):
         themes = {path.parent.name for path in THEME.glob("*/carousel.txt")}
-        self.assertEqual(themes, {"starlight", "frieren"})
-        for name in themes:
+        self.assertEqual(themes, {"starlight", "frieren", "split"})
+        for name in ("starlight", "frieren"):
             with self.subTest(theme=name):
                 self.assertTrue((THEME / name / "background.png").is_file())
                 source = (THEME / name / "carousel.txt").read_text()
                 self.assertIn("caelestia-theme-switch", source)
                 self.assertIn("T   Theme:", source)
+        self.assertEqual(list((THEME / "split").glob("*.png")), [])
+        self.assertIn("caelestia-split", (THEME / "split/carousel.txt").read_text())
         self.assertTrue((THEME / "themes.cfg").is_file())
         self.assertTrue((THEME / "icons/windows.png").is_file())
 
